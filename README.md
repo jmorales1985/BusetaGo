@@ -24,7 +24,13 @@ conductores se registran con clave, eligen su unidad y comparten su ubicación G
 - Selección de la buseta que maneja hoy.
 - **Registro de nuevos conductores** (nombre, placa y ruta) → aparece una nueva unidad.
 - Interruptor **"Compartir mi ubicación (GPS real)"** para transmitir la posición del teléfono.
-- Lista de **pasajeros esperando** en su ruta, con nombre, distancia y ETA.
+- Lista de **pasajeros esperando** con nombre, distancia y ETA, con botón **Recoger**.
+- Sección **A bordo** con botón **Dejar** por pasajero; al dejarlo desaparece del mapa.
+- Botón **"Dejar todos (fin de ruta)"** pensado para buseta escolar.
+
+### General
+- Menús **contraíbles** (tocá el encabezado o la barra) para ver el mapa a pantalla completa en el celular.
+- Todo se actualiza **en tiempo real**: posiciones, distancias y ETAs.
 
 ---
 

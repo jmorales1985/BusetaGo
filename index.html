@@ -75,11 +75,28 @@
   @media(min-width:820px){
     .sheet{left:14px;bottom:14px;right:auto;width:370px;border-radius:18px;border:1px solid var(--line);max-height:calc(100vh - 90px)}
   }
-  .handle{width:38px;height:4px;border-radius:99px;background:rgba(255,255,255,.22);margin:9px auto 4px}
-  .sheet-head{padding:4px 18px 12px;border-bottom:1px solid var(--line)}
+  .handle{width:38px;height:4px;border-radius:99px;background:rgba(255,255,255,.22);margin:9px auto 4px;cursor:pointer}
+  .sheet-head{padding:4px 18px 12px;border-bottom:1px solid var(--line);display:flex;align-items:flex-start;gap:10px;cursor:pointer}
+  .sheet-head .htext{flex:1;min-width:0}
   .sheet-head h2{margin:0;font-size:16px;letter-spacing:.2px}
   .sheet-head p{margin:3px 0 0;color:var(--muted);font-size:12.5px;line-height:1.35}
+  .chev{flex:none;color:var(--muted);font-size:15px;background:var(--petrol-2);border:1px solid var(--line);
+    width:30px;height:30px;border-radius:9px;display:grid;place-items:center;transition:.15s}
+  .sheet.collapsed{max-height:none}
+  .sheet.collapsed .sheet-body{display:none}
+  .sheet.collapsed .sheet-head{border-bottom:0;padding-bottom:10px}
+  .sheet.collapsed .sheet-head p{display:none}
   .sheet-body{padding:12px 14px 16px;overflow-y:auto}
+
+  /* small action buttons inside passenger cards */
+  .mini{border:1px solid var(--line);background:var(--petrol-2);color:var(--ink);font-weight:700;
+    font-size:11.5px;padding:7px 11px;border-radius:9px;cursor:pointer;white-space:nowrap;transition:.15s}
+  .mini:hover{border-color:rgba(255,255,255,.3)}
+  .mini.go{background:var(--emerald);color:#06231a;border-color:transparent}
+  .mini.drop{background:var(--amber);color:#241a00;border-color:transparent}
+  .grouplabel{display:flex;align-items:center;gap:8px;color:var(--muted);font-size:11px;font-weight:800;
+    letter-spacing:.6px;margin:14px 2px 8px;text-transform:uppercase}
+  .grouplabel .count{background:var(--petrol-2);border:1px solid var(--line);border-radius:99px;padding:1px 8px;color:var(--ink)}
 
   .actions{display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap}
   .btn{
@@ -191,9 +208,12 @@
 
 <div class="sheet">
   <div class="handle"></div>
-  <div class="sheet-head">
-    <h2 id="sheetTitle">Busetas en vivo</h2>
-    <p id="sheetSub">Mirá por dónde viene tu buseta y marcá dónde estás esperando.</p>
+  <div class="sheet-head" id="sheetHead">
+    <div class="htext">
+      <h2 id="sheetTitle">Busetas en vivo</h2>
+      <p id="sheetSub">Mirá por dónde viene tu buseta y marcá dónde estás esperando.</p>
+    </div>
+    <div class="chev" id="chev">▾</div>
   </div>
   <div class="sheet-body" id="sheetBody"></div>
 </div>
@@ -285,15 +305,23 @@ function etaMin(from,to){ return Math.max(1,Math.round(haversine(from,to)/AVG_KM
 /* -------- waiting pins (clientes esperando) -------- */
 const pins = [];
 let placing = false;
+function pinIcon(status){
+  const c = status==='onboard' ? 'var(--emerald)' : 'var(--teal)';
+  const em = status==='onboard' ? '🧒' : '🙋';
+  return L.divIcon({className:'',html:`<div class="wait-pin" style="background:${c}"><span>${em}</span></div>`,
+                    iconSize:[34,34],iconAnchor:[6,32]});
+}
 function addPin(lat,lng,name){
   const nm = (name&&name.trim()) ? name.trim() : ('Pasajero '+(pins.length+1));
-  const p={ id:pins.length+1, lat, lng, name:nm, marker:null };
-  p.marker = L.marker([lat,lng],{
-    icon:L.divIcon({className:'',html:`<div class="wait-pin"><span>🙋</span></div>`,
-                    iconSize:[34,34],iconAnchor:[6,32]})
-  }).addTo(map).bindPopup(`<b>${nm}</b><br>Esperando aquí`);
+  const p={ id:pins.length+1, lat, lng, name:nm, status:'waiting', marker:null };
+  p.marker = L.marker([lat,lng],{ icon:pinIcon('waiting') })
+    .addTo(map).bindPopup(`<b>${nm}</b><br>Esperando`);
   pins.push(p); render();
 }
+function pickUp(p){ p.status='onboard'; p.marker.setIcon(pinIcon('onboard'));
+  p.marker.setPopupContent(`<b>${p.name}</b><br>A bordo 🧒`); render(); }
+function dropOff(p){ p.status='done'; map.removeLayer(p.marker); render(); }
+function dropAll(){ pins.filter(p=>p.status==='onboard').forEach(p=>{p.status='done';map.removeLayer(p.marker);}); render(); }
 
 /* ask for the passenger name before dropping the pin */
 let pendingLoc=null;
@@ -339,20 +367,34 @@ function setRole(r){
 
 function render(){
   const body=$('#sheetBody');
+  const sc=body.scrollTop;
   if(role==='cliente') renderClient(body); else renderDriver(body);
+  body.scrollTop=sc;
 }
+
+/* collapse / expand the bottom sheet to free up the map on mobile */
+let collapsed=false;
+function toggleCollapse(){
+  collapsed=!collapsed;
+  document.querySelector('.sheet').classList.toggle('collapsed',collapsed);
+  document.getElementById('chev').textContent = collapsed ? '▴' : '▾';
+  setTimeout(()=>map.invalidateSize(),260);
+}
+document.getElementById('sheetHead').addEventListener('click',toggleCollapse);
+document.querySelector('.handle').addEventListener('click',e=>{e.stopPropagation();toggleCollapse();});
 
 function renderClient(body){
   $('#sheetTitle').textContent='Busetas en vivo';
   $('#sheetSub').textContent='Mirá por dónde viene tu buseta y marcá dónde estás esperando.';
-  const ref = pins.length ? [pins[pins.length-1].lat,pins[pins.length-1].lng] : null;
+  const active = pins.filter(p=>p.status!=='done');
+  const ref = active.length ? [active[active.length-1].lat,active[active.length-1].lng] : null;
 
   let html = `<div class="actions">
     <button class="btn primary ${placing?'armed':''}" id="place">${placing?'Tocá el mapa 👆':'📍 Marcar dónde espero'}</button>
     <button class="btn ghost" id="geo">🛰️ Usar mi ubicación</button>
   </div>`;
-  html += pins.length
-    ? `<div class="hint">${pins.length} punto(s) de espera marcado(s). El ETA se calcula al más reciente. <a href="#" id="clr" style="color:var(--amber)">Limpiar</a></div>`
+  html += active.length
+    ? `<div class="hint">${active.length} punto(s) de espera activo(s). El ETA se calcula al más reciente. <a href="#" id="clr" style="color:var(--amber)">Limpiar</a></div>`
     : `<div class="hint">Aún no marcás dónde esperás. Los tiempos abajo son estimados a tu punto una vez marcado.</div>`;
 
   buses.forEach(b=>{
@@ -424,19 +466,35 @@ function renderDriver(body){
       <div class="s">${my.gps?'Transmitiendo tu posición real':'Usando posición simulada'}</div></div>
       <button class="toggle ${my.gps?'on':''}" id="gpsTgl"></button>
     </div>`;
-    html += `<div class="hint">Pasajeros esperando en tu ruta:</div>`;
-    if(pins.length===0){
-      html += `<div class="empty">Nadie ha marcado un punto todavía.<br>Cambiá a <b>Cliente</b> y tocá el mapa para simularlo.</div>`;
+    const waiting = pins.filter(p=>p.status==='waiting');
+    const onboard = pins.filter(p=>p.status==='onboard');
+
+    html += `<div class="grouplabel">Esperando <span class="count">${waiting.length}</span></div>`;
+    if(waiting.length===0){
+      html += `<div class="empty">Nadie esperando por ahora.<br>Cambiá a <b>Cliente</b> y tocá el mapa para simularlo.</div>`;
     } else {
-      pins.forEach(p=>{
+      waiting.forEach(p=>{
         const eta=etaMin(my.marker.getLatLng(),[p.lat,p.lng]);
         html += `<div class="card" data-pin="${p.id}">
           <div class="badge" style="background:var(--teal)">🙋</div>
           <div class="meta"><div class="t">${p.name}</div>
-          <div class="s">${haversine(my.marker.getLatLng(),[p.lat,p.lng]).toFixed(1)} km de distancia</div></div>
-          <div class="eta"><div class="n">${eta}</div><div class="u">MIN</div></div>
+          <div class="s">${haversine(my.marker.getLatLng(),[p.lat,p.lng]).toFixed(1)} km · ${eta} min</div></div>
+          <button class="mini go" data-pick-up="${p.id}">Recoger</button>
         </div>`;
       });
+    }
+
+    if(onboard.length>0){
+      html += `<div class="grouplabel">A bordo <span class="count">${onboard.length}</span></div>`;
+      onboard.forEach(p=>{
+        html += `<div class="card" data-pin="${p.id}">
+          <div class="badge" style="background:var(--emerald)">🧒</div>
+          <div class="meta"><div class="t">${p.name}</div>
+          <div class="s">A bordo · en camino</div></div>
+          <button class="mini drop" data-drop="${p.id}">Dejar</button>
+        </div>`;
+      });
+      html += `<button class="btn primary" id="dropAll" style="margin-top:10px">🏫 Dejar todos (fin de ruta)</button>`;
     }
   } else {
     html += `<div class="empty" style="margin-top:8px">Elegí una buseta arriba para empezar a transmitir.</div>`;
@@ -454,8 +512,15 @@ function renderDriver(body){
     myBusId=el.dataset.pick; const b=buses.find(x=>x.id===myBusId); focusBus(b); render();
   });
   body.querySelectorAll('[data-pin]').forEach(el=>el.onclick=()=>{
-    const p=pins.find(x=>x.id==el.dataset.pin); map.flyTo([p.lat,p.lng],15);
+    const p=pins.find(x=>x.id==el.dataset.pin); if(p&&p.marker._map) map.flyTo([p.lat,p.lng],15);
   });
+  body.querySelectorAll('[data-pick-up]').forEach(el=>el.onclick=(e)=>{
+    e.stopPropagation(); pickUp(pins.find(x=>x.id==el.dataset.pickUp));
+  });
+  body.querySelectorAll('[data-drop]').forEach(el=>el.onclick=(e)=>{
+    e.stopPropagation(); dropOff(pins.find(x=>x.id==el.dataset.drop));
+  });
+  if($('#dropAll')) $('#dropAll').onclick=dropAll;
   if($('#gpsTgl')) $('#gpsTgl').onclick=()=>toggleGps(my);
 
   body.insertAdjacentHTML('beforeend','<a href="#" class="logout" id="logout">Cerrar sesión de conductor</a>');
@@ -497,9 +562,14 @@ function toggleGps(b){
 }
 
 /* clock + animation loop */
-function tick(){ buses.forEach(stepBus); if(role==='cliente') render(); }
+function tick(){
+  buses.forEach(stepBus);
+  const modalOpen=document.getElementById('nameModal').classList.contains('show');
+  if(modalOpen) return;
+  if(role==='cliente'){ render(); }
+  else if(driverAuth && !showForm){ render(); }   // live ETAs for the driver, but not while typing in the form/login
+}
 setInterval(tick,1000);
-setInterval(()=>{ $('.live')&&0; },1000);
 function clock(){ const d=new Date();
   document.title='BusetaGo · '+d.toLocaleTimeString('es-CR',{hour:'2-digit',minute:'2-digit'}); }
 setInterval(clock,1000); clock();
