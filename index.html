@@ -60,7 +60,7 @@
   }
   .role button{
     border:0;background:transparent;color:var(--muted);font-weight:700;font-size:13px;
-    padding:8px 18px;border-radius:999px;cursor:pointer;transition:.18s;letter-spacing:.2px
+    padding:8px 15px;border-radius:999px;cursor:pointer;transition:.18s;letter-spacing:.2px
   }
   .role button.on{background:var(--amber);color:#241a00}
 
@@ -97,6 +97,25 @@
   .grouplabel{display:flex;align-items:center;gap:8px;color:var(--muted);font-size:11px;font-weight:800;
     letter-spacing:.6px;margin:14px 2px 8px;text-transform:uppercase}
   .grouplabel .count{background:var(--petrol-2);border:1px solid var(--line);border-radius:99px;padding:1px 8px;color:var(--ink)}
+  .chk{appearance:none;-webkit-appearance:none;width:22px;height:22px;flex:none;border-radius:6px;
+    border:2px solid #4a5b66;background:var(--petrol);cursor:pointer;position:relative;transition:.15s}
+  .chk:checked{background:var(--emerald);border-color:var(--emerald)}
+  .chk:checked::after{content:"✓";position:absolute;inset:0;display:grid;place-items:center;color:#06231a;font-size:13px;font-weight:900}
+  .btn.drop{background:var(--amber);color:#241a00;border-color:transparent}
+  .btn:disabled{opacity:.45;cursor:not-allowed}
+  /* admin reports */
+  .rep{display:flex;gap:10px;padding:10px 12px;border-radius:12px;background:var(--petrol-2);
+    border:1px solid var(--line);margin-bottom:8px;align-items:center}
+  .rep .time{font-variant-numeric:tabular-nums;color:var(--muted);font-size:11px;font-weight:700;flex:none;width:52px}
+  .rep .who{flex:1;min-width:0}
+  .rep .who .t{font-weight:700;font-size:13px}
+  .rep .who .s{color:var(--muted);font-size:11.5px;margin-top:1px}
+  .rep .dest{flex:none;font-size:11.5px;font-weight:800;color:#9fc6ff;background:rgba(123,156,240,.12);
+    border:1px solid rgba(123,156,240,.3);padding:3px 9px;border-radius:99px}
+  .stat{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px}
+  .stat .box{flex:1;min-width:90px;background:var(--petrol-2);border:1px solid var(--line);border-radius:12px;padding:10px 12px}
+  .stat .box .n{font-size:20px;font-weight:800;font-variant-numeric:tabular-nums}
+  .stat .box .l{color:var(--muted);font-size:11px;font-weight:700;letter-spacing:.3px;margin-top:2px}
 
   .actions{display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap}
   .btn{
@@ -204,6 +223,7 @@
 <div class="role">
   <button id="roleClient" class="on">Cliente</button>
   <button id="roleDriver">Conductor</button>
+  <button id="roleAdmin">Admin</button>
 </div>
 
 <div class="sheet">
@@ -230,6 +250,15 @@
   </div>
 </div>
 
+<div class="modal" id="destModal">
+  <div class="modal-card">
+    <h3>¿Dónde los dejaste?</h3>
+    <p id="destSub">Elegí el destino para guardarlo en el reporte.</p>
+    <div id="destBtns" style="display:flex;flex-direction:column;gap:8px;margin-top:6px"></div>
+    <div class="modal-actions"><button class="btn ghost" id="destCancel">Cancelar</button></div>
+  </div>
+</div>
+
 <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.js"></script>
 <script>
 /* ============================================================
@@ -239,32 +268,43 @@
    - Conductor: se registra, elige buseta y puede compartir GPS real
    ============================================================ */
 
-const map = L.map('map', { zoomControl:false }).setView([9.938, -84.083], 13);
+const map = L.map('map', { zoomControl:false }).setView([10.0790, -84.2180], 14);
 L.control.zoom({ position:'topright' }).addTo(map);
 L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
   maxZoom: 19, attribution: '© OpenStreetMap'
 }).addTo(map);
 
+/* Coordenadas en el distrito de Sabanilla de Alajuela (rumbo al Poás). Sabanilla, Los Ángeles y centro son de OpenStreetMap; San Luis y El Cerro son aproximados — ajustar a los pines reales. */
+const SAB=[10.0741,-84.2157], LA=[10.0864,-84.2210], SL=[10.0855,-84.2290], EC=[10.0925,-84.2085];
+const PLACES=['Sabanilla','Los Ángeles','San Luis','El Cerro'];
+const PLACE_COORD={ 'Sabanilla':SAB, 'Los Ángeles':LA, 'San Luis':SL, 'El Cerro':EC };
+
 const ROUTES = {
-  A:{ name:'Ruta Norte · San José ⇄ Heredia',  color:'#F5A524',
-      path:[[9.9333,-84.0783],[9.9450,-84.0850],[9.9600,-84.0950],[9.9750,-84.1050],[9.9980,-84.1170]] },
-  B:{ name:'Ruta Oeste · San José ⇄ Santa Ana', color:'#3B9E82',
-      path:[[9.9333,-84.0783],[9.9280,-84.0950],[9.9250,-84.1100],[9.9200,-84.1300],[9.9330,-84.1550]] },
-  C:{ name:'Ruta Este · San José ⇄ Tres Ríos',  color:'#7B9CF0',
-      path:[[9.9333,-84.0783],[9.9250,-84.0650],[9.9180,-84.0500],[9.9130,-84.0350],[9.9080,-84.0180]] },
+  S_LA:{ name:'Sabanilla → Los Ángeles', color:'#F5A524', dest:'Los Ángeles', ret:'LA_S',
+         path:[SAB,[10.0803,-84.2184],LA] },
+  LA_S:{ name:'Los Ángeles → Sabanilla', color:'#F5A524', dest:'Sabanilla', ret:'S_LA',
+         path:[LA,[10.0803,-84.2184],SAB] },
+  S_SL:{ name:'Sabanilla → San Luis',    color:'#3B9E82', dest:'San Luis',  ret:'SL_S',
+         path:[SAB,[10.0798,-84.2224],SL] },
+  SL_S:{ name:'San Luis → Sabanilla',    color:'#3B9E82', dest:'Sabanilla', ret:'S_SL',
+         path:[SL,[10.0798,-84.2224],SAB] },
+  S_EC:{ name:'Sabanilla → El Cerro',    color:'#7B9CF0', dest:'El Cerro',  ret:'EC_S',
+         path:[SAB,[10.0833,-84.2121],EC] },
+  EC_S:{ name:'El Cerro → Sabanilla',    color:'#7B9CF0', dest:'Sabanilla', ret:'S_EC',
+         path:[EC,[10.0833,-84.2121],SAB] },
 };
 
-// draw routes faintly
-for(const k in ROUTES){
+// draw the three corridors once (outbound paths)
+['S_LA','S_SL','S_EC'].forEach(k=>{
   L.polyline(ROUTES[k].path,{color:ROUTES[k].color,weight:4,opacity:.35}).addTo(map);
-}
+});
 
 let seq = 0;
 const buses = [];
 function makeBus(driver, plate, routeKey, p0){
   const b = { id:'b'+(++seq), driver, plate, routeKey,
-              p:(p0??Math.random()*3), dir:Math.random()<.5?1:-1,
-              speed:0.055+Math.random()*0.02, gps:false, marker:null };
+              p:(p0??Math.random()*1.5),
+              speed:0.06+Math.random()*0.02, gps:false, marker:null };
   const c = ROUTES[routeKey].color;
   b.marker = L.marker(posOf(b), {
     icon:L.divIcon({className:'',html:`<div class="bus-badge" style="--c:${c}">🚐</div>`,
@@ -273,10 +313,10 @@ function makeBus(driver, plate, routeKey, p0){
   b.marker.on('click',()=>focusBus(b));
   buses.push(b); return b;
 }
-// starting fleet — three registered drivers
-makeBus('Marco Jiménez','SJB-472','A',0.4);
-makeBus('Silvia Rojas','CB-1180','B',1.6);
-makeBus('Diego Castro','HB-905','C',2.3);
+// starting fleet — three registered drivers, one per corridor
+makeBus('Marco Jiménez','SJB-472','S_LA',0.2);
+makeBus('Silvia Rojas','CB-1180','S_SL',0.9);
+makeBus('Diego Castro','HB-905','S_EC',1.4);
 
 function posOf(b){
   const path = ROUTES[b.routeKey].path;
@@ -288,9 +328,13 @@ function posOf(b){
 function stepBus(b){
   if(b.gps) return;
   const path = ROUTES[b.routeKey].path;
-  b.p += b.speed*b.dir;
-  if(b.p>=path.length-1){b.p=path.length-1;b.dir=-1;}
-  if(b.p<=0){b.p=0;b.dir=1;}
+  b.p += b.speed;
+  if(b.p >= path.length-1){                 // llegó al destino → toma la ruta de regreso
+    b.routeKey = ROUTES[b.routeKey].ret; b.p = 0;
+    const c=ROUTES[b.routeKey].color;
+    b.marker.setIcon(L.divIcon({className:'',html:`<div class="bus-badge" style="--c:${c}">🚐</div>`,
+                    iconSize:[38,38],iconAnchor:[19,19]}));
+  }
   b.marker.setLatLng(posOf(b));
 }
 function haversine(a,b){
@@ -320,8 +364,43 @@ function addPin(lat,lng,name){
 }
 function pickUp(p){ p.status='onboard'; p.marker.setIcon(pinIcon('onboard'));
   p.marker.setPopupContent(`<b>${p.name}</b><br>A bordo 🧒`); render(); }
-function dropOff(p){ p.status='done'; map.removeLayer(p.marker); render(); }
-function dropAll(){ pins.filter(p=>p.status==='onboard').forEach(p=>{p.status='done';map.removeLayer(p.marker);}); render(); }
+
+/* -------- reports (historial de entregas) -------- */
+const reports = [];        // {time, passenger, destination, plate, driver}
+const selected = new Set(); // ids of onboard passengers selected to drop together
+
+// open the destination picker for a set of onboard passenger ids
+let pendingDrop=[];
+function openDropModal(ids){
+  pendingDrop = ids.filter(id=>{ const p=pins.find(x=>x.id==id); return p&&p.status==='onboard'; });
+  if(pendingDrop.length===0) return;
+  document.getElementById('destSub').textContent =
+    `Vas a dejar ${pendingDrop.length} pasajero(s). Elegí el destino para el reporte.`;
+  const box=document.getElementById('destBtns'); box.innerHTML='';
+  PLACES.forEach(place=>{
+    const btn=document.createElement('button');
+    btn.className='btn primary'; btn.textContent='📍 '+place;
+    btn.onclick=()=>confirmDrop(place);
+    box.appendChild(btn);
+  });
+  document.getElementById('destModal').classList.add('show');
+}
+function confirmDrop(place){
+  const my = buses.find(b=>b.id===myBusId);
+  const now = new Date();
+  pendingDrop.forEach(id=>{
+    const p=pins.find(x=>x.id==id); if(!p||p.status!=='onboard') return;
+    reports.push({ time:now, passenger:p.name, destination:place,
+                   plate:my?my.plate:'—', driver:my?my.driver:'—' });
+    p.status='done'; map.removeLayer(p.marker); selected.delete(p.id);
+  });
+  pendingDrop=[];
+  document.getElementById('destModal').classList.remove('show');
+  render();
+}
+document.getElementById('destCancel').onclick=()=>{
+  document.getElementById('destModal').classList.remove('show'); pendingDrop=[];
+};
 
 /* ask for the passenger name before dropping the pin */
 let pendingLoc=null;
@@ -353,22 +432,28 @@ let role='cliente';
 let myBusId=null;      // conductor's selected bus
 let showForm=false;
 const DRIVER_KEY='buseta2026';   // clave de acceso de conductores (demo)
+const ADMIN_KEY='admin2026';     // clave de acceso de administrador (demo)
 let driverAuth=false;
+let adminAuth=false;
 
 const $ = s=>document.querySelector(s);
 $('#roleClient').onclick=()=>setRole('cliente');
 $('#roleDriver').onclick=()=>setRole('conductor');
+$('#roleAdmin').onclick=()=>setRole('admin');
 function setRole(r){
   role=r; placing=false;
   $('#roleClient').classList.toggle('on',r==='cliente');
   $('#roleDriver').classList.toggle('on',r==='conductor');
+  $('#roleAdmin').classList.toggle('on',r==='admin');
   render();
 }
 
 function render(){
   const body=$('#sheetBody');
   const sc=body.scrollTop;
-  if(role==='cliente') renderClient(body); else renderDriver(body);
+  if(role==='cliente') renderClient(body);
+  else if(role==='conductor') renderDriver(body);
+  else renderAdmin(body);
   body.scrollTop=sc;
 }
 
@@ -442,9 +527,12 @@ function renderDriver(body){
     <label>Placa</label><input id="fPlate" placeholder="Ej: BUS-330"/>
     <label>Ruta</label>
     <select id="fRoute">
-      <option value="A">Ruta Norte · San José ⇄ Heredia</option>
-      <option value="B">Ruta Oeste · San José ⇄ Santa Ana</option>
-      <option value="C">Ruta Este · San José ⇄ Tres Ríos</option>
+      <option value="S_LA">Sabanilla → Los Ángeles</option>
+      <option value="LA_S">Los Ángeles → Sabanilla</option>
+      <option value="S_SL">Sabanilla → San Luis</option>
+      <option value="SL_S">San Luis → Sabanilla</option>
+      <option value="S_EC">Sabanilla → El Cerro</option>
+      <option value="EC_S">El Cerro → Sabanilla</option>
     </select>
     <button class="btn primary" id="fSave" style="margin-top:4px">Registrar y salir a ruta</button>
   </div>`;
@@ -455,7 +543,7 @@ function renderDriver(body){
     html += `<div class="card" data-pick="${b.id}" style="${sel?'border-color:'+c:''}">
       <div class="badge" style="background:${c}">🚐</div>
       <div class="meta"><div class="t">${b.driver} ${sel?'· (vos)':''}</div>
-      <div class="s">${b.plate} · ${ROUTES[b.routeKey].name.split('·')[0].trim()}</div></div>
+      <div class="s">${b.plate} · ${ROUTES[b.routeKey].name}</div></div>
       <div class="eta"><div class="u" style="font-size:11px">${sel?'ACTIVA':'ELEGIR'}</div></div>
     </div>`;
   });
@@ -485,16 +573,20 @@ function renderDriver(body){
     }
 
     if(onboard.length>0){
+      const selCount=onboard.filter(p=>selected.has(p.id)).length;
       html += `<div class="grouplabel">A bordo <span class="count">${onboard.length}</span></div>`;
       onboard.forEach(p=>{
-        html += `<div class="card" data-pin="${p.id}">
+        html += `<div class="card">
+          <input type="checkbox" class="chk" data-sel="${p.id}" ${selected.has(p.id)?'checked':''}/>
           <div class="badge" style="background:var(--emerald)">🧒</div>
           <div class="meta"><div class="t">${p.name}</div>
           <div class="s">A bordo · en camino</div></div>
-          <button class="mini drop" data-drop="${p.id}">Dejar</button>
         </div>`;
       });
-      html += `<button class="btn primary" id="dropAll" style="margin-top:10px">🏫 Dejar todos (fin de ruta)</button>`;
+      html += `<div class="actions" style="margin-top:10px">
+        <button class="btn ${selCount?'drop':'ghost'}" id="dropSel" ${selCount?'':'disabled'}>Dejar seleccionados (${selCount})</button>
+        <button class="btn primary" id="dropAll">🏫 Dejar todos</button>
+      </div>`;
     }
   } else {
     html += `<div class="empty" style="margin-top:8px">Elegí una buseta arriba para empezar a transmitir.</div>`;
@@ -517,10 +609,12 @@ function renderDriver(body){
   body.querySelectorAll('[data-pick-up]').forEach(el=>el.onclick=(e)=>{
     e.stopPropagation(); pickUp(pins.find(x=>x.id==el.dataset.pickUp));
   });
-  body.querySelectorAll('[data-drop]').forEach(el=>el.onclick=(e)=>{
-    e.stopPropagation(); dropOff(pins.find(x=>x.id==el.dataset.drop));
+  body.querySelectorAll('[data-sel]').forEach(el=>el.onchange=(e)=>{
+    e.stopPropagation(); const id=Number(el.dataset.sel);
+    if(el.checked) selected.add(id); else selected.delete(id); render();
   });
-  if($('#dropAll')) $('#dropAll').onclick=dropAll;
+  if($('#dropSel')) $('#dropSel').onclick=()=>openDropModal([...selected]);
+  if($('#dropAll')) $('#dropAll').onclick=()=>openDropModal(pins.filter(p=>p.status==='onboard').map(p=>p.id));
   if($('#gpsTgl')) $('#gpsTgl').onclick=()=>toggleGps(my);
 
   body.insertAdjacentHTML('beforeend','<a href="#" class="logout" id="logout">Cerrar sesión de conductor</a>');
@@ -548,6 +642,83 @@ function renderDriverLogin(body){
   setTimeout(()=>$('#drvKey').focus(),50);
 }
 
+/* ---------------- ADMIN ---------------- */
+function renderAdmin(body){
+  if(!adminAuth){ renderAdminLogin(body); return; }
+  $('#sheetTitle').textContent='Panel de administrador';
+  $('#sheetSub').textContent='Reportes históricos de entregas de pasajeros.';
+
+  const total=reports.length;
+  const byDest={}; PLACES.forEach(p=>byDest[p]=0);
+  reports.forEach(r=>{ byDest[r.destination]=(byDest[r.destination]||0)+1; });
+  const topDest = total ? Object.entries(byDest).sort((a,b)=>b[1]-a[1])[0][0] : '—';
+
+  let html=`<div class="stat">
+    <div class="box"><div class="n">${total}</div><div class="l">ENTREGAS</div></div>
+    <div class="box"><div class="n">${new Set(reports.map(r=>r.passenger)).size}</div><div class="l">PASAJEROS</div></div>
+    <div class="box"><div class="n" style="font-size:14px;line-height:1.5">${topDest}</div><div class="l">DESTINO TOP</div></div>
+  </div>`;
+
+  html+=`<div class="grouplabel">Historial ${total?`<span class="count">${total}</span>`:''}</div>`;
+  if(total===0){
+    html+=`<div class="empty">Aún no hay entregas registradas.<br>En <b>Conductor</b>, recogé y luego dejá pasajeros eligiendo el destino.</div>`;
+  } else {
+    [...reports].reverse().forEach(r=>{
+      const hh=r.time.toLocaleTimeString('es-CR',{hour:'2-digit',minute:'2-digit'});
+      html+=`<div class="rep">
+        <div class="time">${hh}</div>
+        <div class="who"><div class="t">${r.passenger}</div>
+        <div class="s">${r.driver} · ${r.plate}</div></div>
+        <div class="dest">${r.destination}</div>
+      </div>`;
+    });
+    html+=`<div class="actions" style="margin-top:10px">
+      <button class="btn ghost" id="expCsv">⬇️ Exportar CSV</button>
+      <button class="btn ghost" id="clrRep">Limpiar historial</button>
+    </div>`;
+  }
+  html+=`<div class="hint" style="margin-top:10px">Nota: en esta demo los reportes viven en memoria y se borran al recargar. Con backend (Supabase) quedarían guardados y accesibles desde cualquier dispositivo.</div>`;
+  body.innerHTML=html;
+
+  if($('#clrRep')) $('#clrRep').onclick=()=>{ if(confirm('¿Borrar todo el historial?')){reports.length=0;render();} };
+  if($('#expCsv')) $('#expCsv').onclick=exportCsv;
+
+  body.insertAdjacentHTML('beforeend','<a href="#" class="logout" id="logoutA">Cerrar sesión de admin</a>');
+  $('#logoutA').onclick=e=>{e.preventDefault();adminAuth=false;render();};
+}
+
+function exportCsv(){
+  const rows=[['Fecha','Hora','Pasajero','Destino','Conductor','Placa']];
+  reports.forEach(r=>rows.push([
+    r.time.toLocaleDateString('es-CR'), r.time.toLocaleTimeString('es-CR'),
+    r.passenger, r.destination, r.driver, r.plate ]));
+  const csv=rows.map(row=>row.map(c=>`"${String(c).replace(/"/g,'""')}"`).join(',')).join('\n');
+  const url=URL.createObjectURL(new Blob([csv],{type:'text/csv'}));
+  const a=document.createElement('a'); a.href=url; a.download='reporte-busetago.csv'; a.click();
+  URL.revokeObjectURL(url);
+}
+
+function renderAdminLogin(body){
+  $('#sheetTitle').textContent='Acceso administrador';
+  $('#sheetSub').textContent='Ingresá la clave para ver los reportes.';
+  body.innerHTML=`
+    <div class="form show" style="align-items:stretch">
+      <div class="lock">📊</div>
+      <label>Clave de administrador</label>
+      <input id="admKey" type="password" placeholder="••••••••" autocomplete="off"/>
+      <button class="btn primary" id="admEnter" style="margin-top:4px">Ingresar</button>
+      <div class="err" id="admErr"></div>
+    </div>
+    <div class="hint" style="text-align:center">Clave de demo: <b style="color:var(--amber)">admin2026</b></div>`;
+  const go=()=>{
+    if($('#admKey').value===ADMIN_KEY){ adminAuth=true; render(); }
+    else { $('#admErr').textContent='Clave incorrecta. Intentá de nuevo.'; $('#admKey').value=''; $('#admKey').focus(); }
+  };
+  $('#admEnter').onclick=go;
+  $('#admKey').addEventListener('keydown',e=>{if(e.key==='Enter')go();});
+  setTimeout(()=>$('#admKey').focus(),50);
+}
+
 let watchId=null;
 function toggleGps(b){
   if(!b) return;
@@ -564,10 +735,12 @@ function toggleGps(b){
 /* clock + animation loop */
 function tick(){
   buses.forEach(stepBus);
-  const modalOpen=document.getElementById('nameModal').classList.contains('show');
+  const modalOpen=document.getElementById('nameModal').classList.contains('show')
+                || document.getElementById('destModal').classList.contains('show');
   if(modalOpen) return;
   if(role==='cliente'){ render(); }
-  else if(driverAuth && !showForm){ render(); }   // live ETAs for the driver, but not while typing in the form/login
+  else if(role==='conductor' && driverAuth && !showForm){ render(); }   // live ETAs, but not while typing
+  else if(role==='admin' && adminAuth){ render(); }                     // live report list
 }
 setInterval(tick,1000);
 function clock(){ const d=new Date();

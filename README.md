@@ -5,9 +5,23 @@ Los pasajeros ven por dónde viene su buseta y marcan dónde están esperando; l
 conductores se registran con clave, eligen su unidad y comparten su ubicación GPS.
 
 > ⚠️ **Demo funcional.** Todo corre en un solo archivo `index.html`. Las busetas se
-> mueven de forma simulada sobre un mapa real (Gran Área Metropolitana, Costa Rica).
+> mueven de forma simulada sobre un mapa real (distrito de **Sabanilla de Alajuela**, Costa Rica).
 > Para un producto real con sincronización entre varios teléfonos se necesita un
 > backend (ver más abajo).
+
+---
+
+## 🗺️ Rutas
+
+Esquema tipo escolar con Sabanilla como punto central:
+
+- Sabanilla → Los Ángeles / Los Ángeles → Sabanilla
+- Sabanilla → San Luis / San Luis → Sabanilla
+- Sabanilla → El Cerro / El Cerro → Sabanilla
+
+> Las coordenadas están ubicadas en el **distrito de Sabanilla de Alajuela** (rumbo al
+> Poás). Sabanilla y Los Ángeles vienen de OpenStreetMap; San Luis y El Cerro son
+> aproximados y se ajustan a los pines reales de cada comunidad.
 
 ---
 
@@ -21,12 +35,18 @@ conductores se registran con clave, eligen su unidad y comparten su ubicación G
 
 ### Vista Conductor
 - **Acceso con clave** (login).
-- Selección de la buseta que maneja hoy.
-- **Registro de nuevos conductores** (nombre, placa y ruta) → aparece una nueva unidad.
-- Interruptor **"Compartir mi ubicación (GPS real)"** para transmitir la posición del teléfono.
+- Selección de la buseta que maneja hoy y **registro de nuevos conductores** (nombre, placa y ruta).
+- Interruptor **"Compartir mi ubicación (GPS real)"**.
 - Lista de **pasajeros esperando** con nombre, distancia y ETA, con botón **Recoger**.
-- Sección **A bordo** con botón **Dejar** por pasajero; al dejarlo desaparece del mapa.
-- Botón **"Dejar todos (fin de ruta)"** pensado para buseta escolar.
+- Sección **A bordo** con **selección múltiple** (casillas): dejar uno, varios o **todos**.
+- Al dejar pasajeros se elige el **destino** (Sabanilla, Los Ángeles, San Luis, El Cerro),
+  que queda registrado para el reporte, y desaparecen del mapa.
+
+### Vista Administrador
+- **Acceso con clave** propio.
+- **Reportes históricos** de entregas: hora, pasajero, destino, conductor y placa.
+- Resumen (total de entregas, pasajeros, destino más frecuente).
+- **Exportar a CSV**.
 
 ### General
 - Menús **contraíbles** (tocá el encabezado o la barra) para ver el mapa a pantalla completa en el celular.
@@ -34,16 +54,15 @@ conductores se registran con clave, eligen su unidad y comparten su ubicación G
 
 ---
 
-## 🔑 Clave de acceso (demo)
+## 🔑 Claves de acceso (demo)
 
-Para entrar al modo Conductor:
+| Rol | Clave |
+|-----|-------|
+| Conductor | `buseta2026` |
+| Administrador | `admin2026` |
 
-```
-buseta2026
-```
-
-> La clave está fija en el código solo para la demostración. En producción cada
-> conductor tendría su propio usuario y contraseña en la base de datos.
+> Las claves están fijas en el código solo para la demostración. En producción cada
+> usuario tendría su propia cuenta y contraseña en la base de datos.
 
 ---
 
@@ -51,8 +70,8 @@ buseta2026
 
 1. Abrí `index.html` en el navegador (o la URL publicada).
 2. En **Cliente**, marcá tu punto de espera y ponete un nombre.
-3. Cambiá a **Conductor**, ingresá la clave, elegí o registrá una buseta y activá el GPS.
-4. Volvé a **Cliente** para ver cómo cambia el ETA mientras la buseta se mueve.
+3. En **Conductor**, ingresá la clave, elegí una buseta, **recogé** pasajeros y luego **dejalos** eligiendo el destino.
+4. En **Admin**, ingresá la clave para ver y exportar los **reportes**.
 
 ---
 
