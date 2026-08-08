@@ -4,7 +4,7 @@ Prototipo web de **rastreo de busetas en tiempo real** para empresas de transpor
 Los pasajeros ven por dónde viene su buseta y marcan dónde están esperando; los
 conductores se registran con clave, eligen su unidad y comparten su ubicación GPS.
 
-> ⚠️ **Demo funcional.** Todo corre en un solo archivo `index.html`. Las busetas se
+> ⚠️ **Versión funcional.** Todo corre en un solo archivo `index.html`. Las busetas se
 > mueven de forma simulada sobre un mapa real (distrito de **Sabanilla de Alajuela**, Costa Rica).
 > Para un producto real con sincronización entre varios teléfonos se necesita un
 > backend (ver más abajo).
@@ -44,9 +44,11 @@ Esquema tipo escolar con Sabanilla como punto central:
 
 ### Vista Administrador
 - **Acceso con clave** propio.
-- **Reportes históricos** de entregas: hora, pasajero, destino, conductor y placa.
+- **Reportes históricos** de entregas: hora, pasajero, destino, **dirección de recogida**,
+  **dirección de entrega** (obtenidas por geocodificación inversa de la ubicación real),
+  conductor y placa.
 - Resumen (total de entregas, pasajeros, destino más frecuente).
-- **Exportar a CSV**.
+- **Exportar a CSV** (incluye direcciones y coordenadas).
 
 ### General
 - Menús **contraíbles** (tocá el encabezado o la barra) para ver el mapa a pantalla completa en el celular.
@@ -54,15 +56,12 @@ Esquema tipo escolar con Sabanilla como punto central:
 
 ---
 
-## 🔑 Claves de acceso (demo)
+## 🔑 Accesos
 
-| Rol | Clave |
-|-----|-------|
-| Conductor | `buseta2026` |
-| Administrador | `admin2026` |
+Las vistas de **Conductor** y **Administrador** están protegidas por clave. Las claves
+se configuran en el código (`DRIVER_KEY` y `ADMIN_KEY`) y no se publican aquí.
 
-> Las claves están fijas en el código solo para la demostración. En producción cada
-> usuario tendría su propia cuenta y contraseña en la base de datos.
+> En producción cada usuario tendría su propia cuenta y contraseña en la base de datos.
 
 ---
 
@@ -80,6 +79,7 @@ Esquema tipo escolar con Sabanilla como punto central:
 - HTML + CSS + JavaScript (sin frameworks, un solo archivo).
 - [Leaflet](https://leafletjs.com/) + [OpenStreetMap](https://www.openstreetmap.org/) para el mapa.
 - API de geolocalización del navegador para el GPS real.
+- Geocodificación inversa con **Nominatim (OpenStreetMap)** para convertir coordenadas en direcciones. En producción conviene un proveedor con llave y límites propios (Google, Mapbox o un Nominatim propio).
 
 ---
 
@@ -105,4 +105,4 @@ Para convertir esto en una app real con datos compartidos entre dispositivos:
 
 ## 📄 Licencia
 
-Uso libre para fines de demostración y desarrollo del proyecto.
+Uso libre para el desarrollo del proyecto.

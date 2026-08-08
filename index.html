@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
-<title>BusetaGo · Demo de rastreo en tiempo real</title>
+<title>BusetaGo · Rastreo en tiempo real</title>
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.css" />
 <style>
   :root{
@@ -216,7 +216,7 @@
 <div id="map"></div>
 
 <div class="topbar">
-  <div class="brand"><span class="glyph">🚐</span><div>BusetaGo<br><small>DEMO · RASTREO EN VIVO</small></div></div>
+  <div class="brand"><span class="glyph">🚐</span><div>BusetaGo<br><small>RASTREO EN VIVO</small></div></div>
   <div class="live"><span class="dot"></span>EN VIVO</div>
 </div>
 
@@ -262,7 +262,7 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.js"></script>
 <script>
 /* ============================================================
-   BusetaGo — prototipo de rastreo en tiempo real (single-file demo)
+   BusetaGo — rastreo de busetas en tiempo real (single-file app)
    - Rutas y busetas simuladas moviéndose sobre un mapa real (GAM, CR)
    - Cliente: marca puntos de espera y ve ETA por buseta
    - Conductor: se registra, elige buseta y puede compartir GPS real
@@ -346,6 +346,21 @@ function haversine(a,b){
 const AVG_KMH=24;
 function etaMin(from,to){ return Math.max(1,Math.round(haversine(from,to)/AVG_KMH*60)); }
 
+/* -------- geocodificación inversa (coordenadas → dirección) -------- */
+function coordStr(lat,lng){ return `${(+lat).toFixed(5)}, ${(+lng).toFixed(5)}`; }
+async function reverseGeocode(lat,lng){
+  try{
+    const url=`https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=${lat}&lon=${lng}&zoom=17&addressdetails=1&accept-language=es`;
+    const r=await fetch(url);
+    const j=await r.json();
+    const a=j.address||{};
+    const parts=[ a.road||a.pedestrian||a.neighbourhood,
+                  a.suburb||a.village||a.hamlet||a.town,
+                  a.city||a.county ].filter(Boolean);
+    return parts.slice(0,3).join(', ') || j.display_name || coordStr(lat,lng);
+  }catch(e){ return coordStr(lat,lng); }  // si falla (sin red o bloqueado), deja las coordenadas
+}
+
 /* -------- waiting pins (clientes esperando) -------- */
 const pins = [];
 let placing = false;
@@ -362,11 +377,19 @@ function addPin(lat,lng,name){
     .addTo(map).bindPopup(`<b>${nm}</b><br>Esperando`);
   pins.push(p); render();
 }
-function pickUp(p){ p.status='onboard'; p.marker.setIcon(pinIcon('onboard'));
-  p.marker.setPopupContent(`<b>${p.name}</b><br>A bordo 🧒`); render(); }
+function pickUp(p){
+  p.status='onboard'; p.marker.setIcon(pinIcon('onboard'));
+  p.marker.setPopupContent(`<b>${p.name}</b><br>A bordo 🧒`);
+  p.pickupTime=new Date();
+  p.pickupCoords=[p.lat,p.lng];
+  p.pickupAddr=coordStr(p.lat,p.lng);          // provisional hasta que resuelva la dirección
+  reverseGeocode(p.lat,p.lng).then(a=>{ p.pickupAddr=a;
+    if(role==='conductor') render(); });
+  render();
+}
 
 /* -------- reports (historial de entregas) -------- */
-const reports = [];        // {time, passenger, destination, plate, driver}
+const reports = [];        // {time, passenger, destination, plate, driver, pickupAddr, dropAddr, dropCoords}
 const selected = new Set(); // ids of onboard passengers selected to drop together
 
 // open the destination picker for a set of onboard passenger ids
@@ -375,7 +398,7 @@ function openDropModal(ids){
   pendingDrop = ids.filter(id=>{ const p=pins.find(x=>x.id==id); return p&&p.status==='onboard'; });
   if(pendingDrop.length===0) return;
   document.getElementById('destSub').textContent =
-    `Vas a dejar ${pendingDrop.length} pasajero(s). Elegí el destino para el reporte.`;
+    `Vas a dejar ${pendingDrop.length} pasajero(s) donde estás ahora. Elegí el destino para el reporte.`;
   const box=document.getElementById('destBtns'); box.innerHTML='';
   PLACES.forEach(place=>{
     const btn=document.createElement('button');
@@ -388,10 +411,16 @@ function openDropModal(ids){
 function confirmDrop(place){
   const my = buses.find(b=>b.id===myBusId);
   const now = new Date();
+  const dc = my ? my.marker.getLatLng() : null;   // ubicación actual de la buseta = dónde se deja
   pendingDrop.forEach(id=>{
     const p=pins.find(x=>x.id==id); if(!p||p.status!=='onboard') return;
-    reports.push({ time:now, passenger:p.name, destination:place,
-                   plate:my?my.plate:'—', driver:my?my.driver:'—' });
+    const rep={ time:now, passenger:p.name, destination:place,
+                plate:my?my.plate:'—', driver:my?my.driver:'—',
+                pickupAddr:p.pickupAddr||'—',
+                dropCoords: dc?[dc.lat,dc.lng]:null,
+                dropAddr: dc?coordStr(dc.lat,dc.lng):'—' };
+    reports.push(rep);
+    if(dc) reverseGeocode(dc.lat,dc.lng).then(a=>{ rep.dropAddr=a; if(role==='admin') render(); });
     p.status='done'; map.removeLayer(p.marker); selected.delete(p.id);
   });
   pendingDrop=[];
@@ -431,8 +460,8 @@ function focusBus(b){ map.flyTo(b.marker.getLatLng(),15,{duration:.6});
 let role='cliente';
 let myBusId=null;      // conductor's selected bus
 let showForm=false;
-const DRIVER_KEY='buseta2026';   // clave de acceso de conductores (demo)
-const ADMIN_KEY='admin2026';     // clave de acceso de administrador (demo)
+const DRIVER_KEY='buseta2026';   // clave de acceso de conductores
+const ADMIN_KEY='admin2026';     // clave de acceso de administrador
 let driverAuth=false;
 let adminAuth=false;
 
@@ -508,7 +537,7 @@ function useMyLocation(){
   if(!navigator.geolocation){ alert('Tu navegador no soporta geolocalización.'); return; }
   navigator.geolocation.getCurrentPosition(
     p=>{ map.flyTo([p.coords.latitude,p.coords.longitude],15); askName(p.coords.latitude,p.coords.longitude); },
-    ()=>alert('No pudimos obtener tu ubicación (permiso denegado o no disponible en la demo).')
+    ()=>alert('No pudimos obtener tu ubicación (permiso denegado o no disponible).')
   );
 }
 
@@ -580,7 +609,7 @@ function renderDriver(body){
           <input type="checkbox" class="chk" data-sel="${p.id}" ${selected.has(p.id)?'checked':''}/>
           <div class="badge" style="background:var(--emerald)">🧒</div>
           <div class="meta"><div class="t">${p.name}</div>
-          <div class="s">A bordo · en camino</div></div>
+          <div class="s">📍 ${p.pickupAddr||'A bordo'}</div></div>
         </div>`;
       });
       html += `<div class="actions" style="margin-top:10px">
@@ -631,8 +660,7 @@ function renderDriverLogin(body){
       <input id="drvKey" type="password" placeholder="••••••••" autocomplete="off"/>
       <button class="btn primary" id="drvEnter" style="margin-top:4px">Ingresar</button>
       <div class="err" id="drvErr"></div>
-    </div>
-    <div class="hint" style="text-align:center">Clave de demo: <b style="color:var(--amber)">buseta2026</b></div>`;
+    </div>`;
   const go=()=>{
     if($('#drvKey').value===DRIVER_KEY){ driverAuth=true; render(); }
     else { $('#drvErr').textContent='Clave incorrecta. Intentá de nuevo.'; $('#drvKey').value=''; $('#drvKey').focus(); }
@@ -668,6 +696,8 @@ function renderAdmin(body){
       html+=`<div class="rep">
         <div class="time">${hh}</div>
         <div class="who"><div class="t">${r.passenger}</div>
+        <div class="s">📍 Recogió: ${r.pickupAddr||'—'}</div>
+        <div class="s">🏁 Dejó: ${r.dropAddr||'—'}</div>
         <div class="s">${r.driver} · ${r.plate}</div></div>
         <div class="dest">${r.destination}</div>
       </div>`;
@@ -677,7 +707,7 @@ function renderAdmin(body){
       <button class="btn ghost" id="clrRep">Limpiar historial</button>
     </div>`;
   }
-  html+=`<div class="hint" style="margin-top:10px">Nota: en esta demo los reportes viven en memoria y se borran al recargar. Con backend (Supabase) quedarían guardados y accesibles desde cualquier dispositivo.</div>`;
+  html+=`<div class="hint" style="margin-top:10px">Nota: por ahora los reportes viven en memoria y se borran al recargar. Con backend (Supabase) quedarían guardados y accesibles desde cualquier dispositivo.</div>`;
   body.innerHTML=html;
 
   if($('#clrRep')) $('#clrRep').onclick=()=>{ if(confirm('¿Borrar todo el historial?')){reports.length=0;render();} };
@@ -688,12 +718,13 @@ function renderAdmin(body){
 }
 
 function exportCsv(){
-  const rows=[['Fecha','Hora','Pasajero','Destino','Conductor','Placa']];
+  const rows=[['Fecha','Hora','Pasajero','Destino','Dirección recogida','Dirección entrega','Coordenadas entrega','Conductor','Placa']];
   reports.forEach(r=>rows.push([
     r.time.toLocaleDateString('es-CR'), r.time.toLocaleTimeString('es-CR'),
-    r.passenger, r.destination, r.driver, r.plate ]));
+    r.passenger, r.destination, r.pickupAddr||'', r.dropAddr||'',
+    r.dropCoords?r.dropCoords.join(' '):'', r.driver, r.plate ]));
   const csv=rows.map(row=>row.map(c=>`"${String(c).replace(/"/g,'""')}"`).join(',')).join('\n');
-  const url=URL.createObjectURL(new Blob([csv],{type:'text/csv'}));
+  const url=URL.createObjectURL(new Blob(['\ufeff'+csv],{type:'text/csv;charset=utf-8'}));
   const a=document.createElement('a'); a.href=url; a.download='reporte-busetago.csv'; a.click();
   URL.revokeObjectURL(url);
 }
@@ -708,8 +739,7 @@ function renderAdminLogin(body){
       <input id="admKey" type="password" placeholder="••••••••" autocomplete="off"/>
       <button class="btn primary" id="admEnter" style="margin-top:4px">Ingresar</button>
       <div class="err" id="admErr"></div>
-    </div>
-    <div class="hint" style="text-align:center">Clave de demo: <b style="color:var(--amber)">admin2026</b></div>`;
+    </div>`;
   const go=()=>{
     if($('#admKey').value===ADMIN_KEY){ adminAuth=true; render(); }
     else { $('#admErr').textContent='Clave incorrecta. Intentá de nuevo.'; $('#admKey').value=''; $('#admKey').focus(); }
@@ -727,7 +757,7 @@ function toggleGps(b){
   watchId=navigator.geolocation.watchPosition(
     p=>{ b.gps=true; b.marker.setLatLng([p.coords.latitude,p.coords.longitude]);
          map.flyTo([p.coords.latitude,p.coords.longitude],15); render(); },
-    ()=>{ alert('No se pudo activar el GPS (permiso denegado). En la demo seguimos con posición simulada.'); },
+    ()=>{ alert('No se pudo activar el GPS (permiso denegado). Se mantiene la posición simulada.'); },
     { enableHighAccuracy:true, maximumAge:2000 }
   );
 }
