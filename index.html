@@ -106,7 +106,11 @@
   /* admin reports */
   .rep{display:flex;gap:10px;padding:10px 12px;border-radius:12px;background:var(--petrol-2);
     border:1px solid var(--line);margin-bottom:8px;align-items:center}
-  .rep .time{font-variant-numeric:tabular-nums;color:var(--muted);font-size:11px;font-weight:700;flex:none;width:52px}
+  .rep .time{font-variant-numeric:tabular-nums;color:var(--muted);font-size:11px;font-weight:700;flex:none;width:44px;text-align:center;line-height:1.4}
+  .filters{display:flex;gap:8px;margin-bottom:12px}
+  .filters .chip{flex:1;border:1px solid var(--line);background:var(--petrol-2);color:var(--muted);
+    font-weight:700;font-size:12.5px;padding:9px 8px;border-radius:10px;cursor:pointer;transition:.15s}
+  .filters .chip.on{background:var(--amber);color:#241a00;border-color:transparent}
   .rep .who{flex:1;min-width:0}
   .rep .who .t{font-weight:700;font-size:13px}
   .rep .who .s{color:var(--muted);font-size:11.5px;margin-top:1px}
@@ -250,15 +254,6 @@
   </div>
 </div>
 
-<div class="modal" id="destModal">
-  <div class="modal-card">
-    <h3>¿Dónde los dejaste?</h3>
-    <p id="destSub">Elegí el destino para guardarlo en el reporte.</p>
-    <div id="destBtns" style="display:flex;flex-direction:column;gap:8px;margin-top:6px"></div>
-    <div class="modal-actions"><button class="btn ghost" id="destCancel">Cancelar</button></div>
-  </div>
-</div>
-
 <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.js"></script>
 <script>
 /* ============================================================
@@ -388,48 +383,37 @@ function pickUp(p){
   render();
 }
 
-/* -------- reports (historial de entregas) -------- */
-const reports = [];        // {time, passenger, destination, plate, driver, pickupAddr, dropAddr, dropCoords}
-const selected = new Set(); // ids of onboard passengers selected to drop together
-
-// open the destination picker for a set of onboard passenger ids
-let pendingDrop=[];
-function openDropModal(ids){
-  pendingDrop = ids.filter(id=>{ const p=pins.find(x=>x.id==id); return p&&p.status==='onboard'; });
-  if(pendingDrop.length===0) return;
-  document.getElementById('destSub').textContent =
-    `Vas a dejar ${pendingDrop.length} pasajero(s) donde estás ahora. Elegí el destino para el reporte.`;
-  const box=document.getElementById('destBtns'); box.innerHTML='';
-  PLACES.forEach(place=>{
-    const btn=document.createElement('button');
-    btn.className='btn primary'; btn.textContent='📍 '+place;
-    btn.onclick=()=>confirmDrop(place);
-    box.appendChild(btn);
-  });
-  document.getElementById('destModal').classList.add('show');
+/* -------- reports (historial de entregas, persistente) -------- */
+const REPORTS_KEY='busetago_reports';
+function loadReports(){
+  try{ const raw=localStorage.getItem(REPORTS_KEY);
+       if(raw){ const arr=JSON.parse(raw); if(Array.isArray(arr)) return arr; } }catch(e){}
+  return [];
 }
-function confirmDrop(place){
+function saveReports(){
+  try{ localStorage.setItem(REPORTS_KEY, JSON.stringify(reports)); }catch(e){}
+}
+let reports = loadReports();   // {t:ISO, passenger, pickupAddr, dropAddr, dropCoords, driver, plate}
+const selected = new Set();     // ids of onboard passengers selected to drop together
+
+// Dejar pasajeros directamente en la ubicación actual de la buseta (sin elegir destino)
+function dropPassengers(ids){
   const my = buses.find(b=>b.id===myBusId);
   const now = new Date();
-  const dc = my ? my.marker.getLatLng() : null;   // ubicación actual de la buseta = dónde se deja
-  pendingDrop.forEach(id=>{
+  const dc = my ? my.marker.getLatLng() : null;   // ubicación actual = dónde se deja
+  ids.forEach(id=>{
     const p=pins.find(x=>x.id==id); if(!p||p.status!=='onboard') return;
-    const rep={ time:now, passenger:p.name, destination:place,
-                plate:my?my.plate:'—', driver:my?my.driver:'—',
+    const rep={ t:now.toISOString(), passenger:p.name,
                 pickupAddr:p.pickupAddr||'—',
                 dropCoords: dc?[dc.lat,dc.lng]:null,
-                dropAddr: dc?coordStr(dc.lat,dc.lng):'—' };
+                dropAddr: dc?coordStr(dc.lat,dc.lng):'—',
+                driver:my?my.driver:'—', plate:my?my.plate:'—' };
     reports.push(rep);
-    if(dc) reverseGeocode(dc.lat,dc.lng).then(a=>{ rep.dropAddr=a; if(role==='admin') render(); });
+    if(dc) reverseGeocode(dc.lat,dc.lng).then(a=>{ rep.dropAddr=a; saveReports(); if(role==='admin') render(); });
     p.status='done'; map.removeLayer(p.marker); selected.delete(p.id);
   });
-  pendingDrop=[];
-  document.getElementById('destModal').classList.remove('show');
-  render();
+  saveReports(); render();
 }
-document.getElementById('destCancel').onclick=()=>{
-  document.getElementById('destModal').classList.remove('show'); pendingDrop=[];
-};
 
 /* ask for the passenger name before dropping the pin */
 let pendingLoc=null;
@@ -464,6 +448,7 @@ const DRIVER_KEY='buseta2026';   // clave de acceso de conductores
 const ADMIN_KEY='admin2026';     // clave de acceso de administrador
 let driverAuth=false;
 let adminAuth=false;
+let adminFilter='today';   // 'today' | 'month' | 'all'
 
 const $ = s=>document.querySelector(s);
 $('#roleClient').onclick=()=>setRole('cliente');
@@ -642,8 +627,8 @@ function renderDriver(body){
     e.stopPropagation(); const id=Number(el.dataset.sel);
     if(el.checked) selected.add(id); else selected.delete(id); render();
   });
-  if($('#dropSel')) $('#dropSel').onclick=()=>openDropModal([...selected]);
-  if($('#dropAll')) $('#dropAll').onclick=()=>openDropModal(pins.filter(p=>p.status==='onboard').map(p=>p.id));
+  if($('#dropSel')) $('#dropSel').onclick=()=>dropPassengers([...selected]);
+  if($('#dropAll')) $('#dropAll').onclick=()=>dropPassengers(pins.filter(p=>p.status==='onboard').map(p=>p.id));
   if($('#gpsTgl')) $('#gpsTgl').onclick=()=>toggleGps(my);
 
   body.insertAdjacentHTML('beforeend','<a href="#" class="logout" id="logout">Cerrar sesión de conductor</a>');
@@ -671,35 +656,49 @@ function renderDriverLogin(body){
 }
 
 /* ---------------- ADMIN ---------------- */
+function inFilter(r){
+  const d=new Date(r.t), now=new Date();
+  if(adminFilter==='today') return d.toDateString()===now.toDateString();
+  if(adminFilter==='month') return d.getFullYear()===now.getFullYear() && d.getMonth()===now.getMonth();
+  return true;
+}
 function renderAdmin(body){
   if(!adminAuth){ renderAdminLogin(body); return; }
   $('#sheetTitle').textContent='Panel de administrador';
-  $('#sheetSub').textContent='Reportes históricos de entregas de pasajeros.';
+  $('#sheetSub').textContent='Historial de entregas de pasajeros.';
 
-  const total=reports.length;
-  const byDest={}; PLACES.forEach(p=>byDest[p]=0);
-  reports.forEach(r=>{ byDest[r.destination]=(byDest[r.destination]||0)+1; });
-  const topDest = total ? Object.entries(byDest).sort((a,b)=>b[1]-a[1])[0][0] : '—';
+  const list = reports.filter(inFilter);
+  const total=list.length;
+  const pax=new Set(list.map(r=>r.passenger)).size;
+  const drv=new Set(list.map(r=>r.driver)).size;
+  const fl=n=>adminFilter===n?'on':'';
 
-  let html=`<div class="stat">
+  let html=`<div class="filters">
+    <button class="chip ${fl('today')}" data-f="today">Hoy</button>
+    <button class="chip ${fl('month')}" data-f="month">Este mes</button>
+    <button class="chip ${fl('all')}" data-f="all">Todo</button>
+  </div>`;
+
+  html+=`<div class="stat">
     <div class="box"><div class="n">${total}</div><div class="l">ENTREGAS</div></div>
-    <div class="box"><div class="n">${new Set(reports.map(r=>r.passenger)).size}</div><div class="l">PASAJEROS</div></div>
-    <div class="box"><div class="n" style="font-size:14px;line-height:1.5">${topDest}</div><div class="l">DESTINO TOP</div></div>
+    <div class="box"><div class="n">${pax}</div><div class="l">PASAJEROS</div></div>
+    <div class="box"><div class="n">${drv}</div><div class="l">CONDUCTORES</div></div>
   </div>`;
 
   html+=`<div class="grouplabel">Historial ${total?`<span class="count">${total}</span>`:''}</div>`;
   if(total===0){
-    html+=`<div class="empty">Aún no hay entregas registradas.<br>En <b>Conductor</b>, recogé y luego dejá pasajeros eligiendo el destino.</div>`;
+    html+=`<div class="empty">No hay entregas en este rango.<br>En <b>Conductor</b>, recogé y luego dejá pasajeros: cada entrega queda guardada aquí.</div>`;
   } else {
-    [...reports].reverse().forEach(r=>{
-      const hh=r.time.toLocaleTimeString('es-CR',{hour:'2-digit',minute:'2-digit'});
+    [...list].reverse().forEach(r=>{
+      const d=new Date(r.t);
+      const dd=d.toLocaleDateString('es-CR',{day:'2-digit',month:'2-digit'});
+      const hh=d.toLocaleTimeString('es-CR',{hour:'2-digit',minute:'2-digit'});
       html+=`<div class="rep">
-        <div class="time">${hh}</div>
+        <div class="time">${dd}<br>${hh}</div>
         <div class="who"><div class="t">${r.passenger}</div>
         <div class="s">📍 Recogió: ${r.pickupAddr||'—'}</div>
         <div class="s">🏁 Dejó: ${r.dropAddr||'—'}</div>
         <div class="s">${r.driver} · ${r.plate}</div></div>
-        <div class="dest">${r.destination}</div>
       </div>`;
     });
     html+=`<div class="actions" style="margin-top:10px">
@@ -707,10 +706,11 @@ function renderAdmin(body){
       <button class="btn ghost" id="clrRep">Limpiar historial</button>
     </div>`;
   }
-  html+=`<div class="hint" style="margin-top:10px">Nota: por ahora los reportes viven en memoria y se borran al recargar. Con backend (Supabase) quedarían guardados y accesibles desde cualquier dispositivo.</div>`;
+  html+=`<div class="hint" style="margin-top:10px">El historial se guarda en este dispositivo y se conserva aunque recargues. Con backend (Supabase) quedaría centralizado y accesible desde cualquier dispositivo.</div>`;
   body.innerHTML=html;
 
-  if($('#clrRep')) $('#clrRep').onclick=()=>{ if(confirm('¿Borrar todo el historial?')){reports.length=0;render();} };
+  body.querySelectorAll('[data-f]').forEach(el=>el.onclick=()=>{ adminFilter=el.dataset.f; render(); });
+  if($('#clrRep')) $('#clrRep').onclick=()=>{ if(confirm('¿Borrar TODO el historial guardado? Esta acción no se puede deshacer.')){reports.length=0;saveReports();render();} };
   if($('#expCsv')) $('#expCsv').onclick=exportCsv;
 
   body.insertAdjacentHTML('beforeend','<a href="#" class="logout" id="logoutA">Cerrar sesión de admin</a>');
@@ -718,14 +718,16 @@ function renderAdmin(body){
 }
 
 function exportCsv(){
-  const rows=[['Fecha','Hora','Pasajero','Destino','Dirección recogida','Dirección entrega','Coordenadas entrega','Conductor','Placa']];
-  reports.forEach(r=>rows.push([
-    r.time.toLocaleDateString('es-CR'), r.time.toLocaleTimeString('es-CR'),
-    r.passenger, r.destination, r.pickupAddr||'', r.dropAddr||'',
-    r.dropCoords?r.dropCoords.join(' '):'', r.driver, r.plate ]));
+  const list=reports.filter(inFilter);
+  const rows=[['Fecha','Hora','Pasajero','Dirección recogida','Dirección entrega','Coordenadas entrega','Conductor','Placa']];
+  list.forEach(r=>{ const d=new Date(r.t); rows.push([
+    d.toLocaleDateString('es-CR'), d.toLocaleTimeString('es-CR'),
+    r.passenger, r.pickupAddr||'', r.dropAddr||'',
+    r.dropCoords?r.dropCoords.join(' '):'', r.driver, r.plate ]); });
   const csv=rows.map(row=>row.map(c=>`"${String(c).replace(/"/g,'""')}"`).join(',')).join('\n');
   const url=URL.createObjectURL(new Blob(['\ufeff'+csv],{type:'text/csv;charset=utf-8'}));
-  const a=document.createElement('a'); a.href=url; a.download='reporte-busetago.csv'; a.click();
+  const a=document.createElement('a'); a.href=url;
+  a.download=`reporte-busetago-${adminFilter}.csv`; a.click();
   URL.revokeObjectURL(url);
 }
 
@@ -765,8 +767,7 @@ function toggleGps(b){
 /* clock + animation loop */
 function tick(){
   buses.forEach(stepBus);
-  const modalOpen=document.getElementById('nameModal').classList.contains('show')
-                || document.getElementById('destModal').classList.contains('show');
+  const modalOpen=document.getElementById('nameModal').classList.contains('show');
   if(modalOpen) return;
   if(role==='cliente'){ render(); }
   else if(role==='conductor' && driverAuth && !showForm){ render(); }   // live ETAs, but not while typing

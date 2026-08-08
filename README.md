@@ -39,16 +39,17 @@ Esquema tipo escolar con Sabanilla como punto central:
 - Interruptor **"Compartir mi ubicación (GPS real)"**.
 - Lista de **pasajeros esperando** con nombre, distancia y ETA, con botón **Recoger**.
 - Sección **A bordo** con **selección múltiple** (casillas): dejar uno, varios o **todos**.
-- Al dejar pasajeros se elige el **destino** (Sabanilla, Los Ángeles, San Luis, El Cerro),
-  que queda registrado para el reporte, y desaparecen del mapa.
+- Al dejar, se registra automáticamente la **ubicación actual** de la buseta como lugar de
+  entrega (con su dirección), y los pasajeros desaparecen del mapa. Sin pasos extra.
 
 ### Vista Administrador
 - **Acceso con clave** propio.
-- **Reportes históricos** de entregas: hora, pasajero, destino, **dirección de recogida**,
-  **dirección de entrega** (obtenidas por geocodificación inversa de la ubicación real),
-  conductor y placa.
-- Resumen (total de entregas, pasajeros, destino más frecuente).
-- **Exportar a CSV** (incluye direcciones y coordenadas).
+- **Historial de entregas** que se **guarda en el dispositivo** y se conserva aunque se recargue.
+- Filtros **Hoy / Este mes / Todo** para sacar reportes por período.
+- Cada entrega: fecha y hora, pasajero, **dirección de recogida** y **dirección de entrega**
+  (por geocodificación inversa de la ubicación real), conductor y placa.
+- Resumen (entregas, pasajeros y conductores del período).
+- **Exportar a CSV** del período seleccionado (incluye direcciones y coordenadas).
 
 ### General
 - Menús **contraíbles** (tocá el encabezado o la barra) para ver el mapa a pantalla completa en el celular.
@@ -69,7 +70,7 @@ se configuran en el código (`DRIVER_KEY` y `ADMIN_KEY`) y no se publican aquí.
 
 1. Abrí `index.html` en el navegador (o la URL publicada).
 2. En **Cliente**, marcá tu punto de espera y ponete un nombre.
-3. En **Conductor**, ingresá la clave, elegí una buseta, **recogé** pasajeros y luego **dejalos** eligiendo el destino.
+3. En **Conductor**, ingresá la clave, elegí una buseta, **recogé** pasajeros y luego **dejalos**: la entrega se guarda con la ubicación actual.
 4. En **Admin**, ingresá la clave para ver y exportar los **reportes**.
 
 ---
