@@ -384,7 +384,7 @@ function renderPins(){
     let m=pinMarkers.get(String(p.id));
     if(!m){ m=L.marker([p.lat,p.lng],{icon:pinIcon(p.status)}).addTo(map); pinMarkers.set(String(p.id),m); }
     else { m.setLatLng([p.lat,p.lng]); m.setIcon(pinIcon(p.status)); }
-    m.bindPopup(`<b>${p.name}</b><br>${p.status==='onboard'?'A bordo 🧒':'Esperando'}`);
+    m.bindPopup(`<b>${p.status==='onboard'?'A bordo 🧒':'Pasajero esperando'}</b>`);
     p.marker=m;
   });
   pinMarkers.forEach((m,id)=>{ if(!ids.has(id)){ map.removeLayer(m); pinMarkers.delete(id);} });
@@ -399,11 +399,26 @@ async function refreshPins(){
     renderPins();
   }
 }
+
+/* pasajeros marcados desde ESTE dispositivo (para que el padre vea el estado de su hijo) */
+const MINE_KEY='busetago_mine';
+let myIds = (()=>{ try{ return JSON.parse(localStorage.getItem(MINE_KEY))||[]; }catch(e){ return []; } })();
+let myPax = [];
+function rememberMine(id){ if(!myIds.includes(id)){ myIds.push(id); try{ localStorage.setItem(MINE_KEY,JSON.stringify(myIds)); }catch(e){} } }
+async function refreshMyPassengers(){
+  if(!sb || myIds.length===0){ myPax=[]; return; }
+  const { data, error } = await sb.from('esperando').select('*').in('id', myIds);
+  if(!error && data){
+    myPax = data.map(r=>({ id:r.id, name:r.name, status:r.status, lat:r.lat, lng:r.lng,
+      dropAddr:r.drop_addr, droppedAt:r.dropped_at }));
+  }
+}
 async function addPin(lat,lng,name){
   const nm = (name&&name.trim()) ? name.trim() : ('Pasajero '+(pins.length+1));
   if(sb){
-    await sb.from('esperando').insert({ name:nm, lat, lng, status:'waiting' });
-    await refreshPins();
+    const { data } = await sb.from('esperando').insert({ name:nm, lat, lng, status:'waiting' }).select();
+    if(data && data[0]){ rememberMine(data[0].id); }
+    await refreshPins(); await refreshMyPassengers();
   } else {
     pins.push({ id:'l'+Date.now(), name:nm, lat, lng, status:'waiting' }); renderPins();
   }
@@ -470,8 +485,12 @@ function dropPassengers(ids){
       pickupAddr:p.pickupAddr||'—', dropAddr,
       dropCoords: dc?[dc.lat,dc.lng]:null, driver:my?my.driver:'—', plate:my?my.plate:'—' }));
     await persistReports(rows);
-    if(sb){ await sb.from('esperando').delete().in('id', dropIds); await refreshPins(); }
-    if(role==='admin') render();
+    if(sb){
+      await sb.from('esperando').update({ status:'done', drop_addr:dropAddr, dropped_at:now.toISOString(),
+        driver: my?my.driver:null, plate: my?my.plate:null }).in('id', dropIds);
+      await refreshPins(); await refreshMyPassengers();
+    }
+    if(role==='admin'||role==='cliente') render();
   })();
 }
 
@@ -551,10 +570,16 @@ map.on('click',e=>{
   if(placing){ askName(e.latlng.lat,e.latlng.lng); }
 });
 async function clearPins(){
-  const waitingIds = pins.filter(p=>p.status==='waiting').map(p=>p.id);
-  if(sb){ if(waitingIds.length) await sb.from('esperando').delete().in('id',waitingIds); await refreshPins(); }
-  else { pins = pins.filter(p=>p.status!=='waiting');
-         pinMarkers.forEach((m,id)=>{ if(!pins.some(p=>String(p.id)===id)){map.removeLayer(m);pinMarkers.delete(id);} }); }
+  const mine = sb ? myPax : pins;
+  const waitingIds = mine.filter(p=>p.status==='waiting').map(p=>p.id);
+  if(sb){
+    if(waitingIds.length) await sb.from('esperando').delete().in('id',waitingIds);
+    myIds = myIds.filter(id=>!waitingIds.includes(id)); try{ localStorage.setItem(MINE_KEY,JSON.stringify(myIds)); }catch(e){}
+    await refreshPins(); await refreshMyPassengers();
+  } else {
+    pins = pins.filter(p=>p.status!=='waiting');
+    pinMarkers.forEach((m,id)=>{ if(!pins.some(p=>String(p.id)===id)){map.removeLayer(m);pinMarkers.delete(id);} });
+  }
   render();
 }
 
@@ -605,18 +630,41 @@ document.querySelector('.handle').addEventListener('click',e=>{e.stopPropagation
 
 function renderClient(body){
   $('#sheetTitle').textContent='Busetas en vivo';
-  $('#sheetSub').textContent='Mirá por dónde viene tu buseta y marcá dónde estás esperando.';
-  const active = pins.filter(p=>p.status!=='done');
-  const ref = active.length ? [active[active.length-1].lat,active[active.length-1].lng] : null;
+  $('#sheetSub').textContent='Seguí la buseta y marcá dónde espera tu hijo.';
+  const mine = sb ? myPax : pins;
+  const myWaiting = mine.filter(p=>p.status==='waiting');
+  const ref = myWaiting.length ? [myWaiting[myWaiting.length-1].lat, myWaiting[myWaiting.length-1].lng] : null;
 
   let html = `<div class="actions">
     <button class="btn primary ${placing?'armed':''}" id="place">${placing?'Tocá el mapa 👆':'📍 Marcar dónde espero'}</button>
     <button class="btn ghost" id="geo">🛰️ Usar mi ubicación</button>
   </div>`;
-  html += active.length
-    ? `<div class="hint">${active.length} punto(s) de espera activo(s). El ETA se calcula al más reciente. <a href="#" id="clr" style="color:var(--amber)">Limpiar</a></div>`
-    : `<div class="hint">Aún no marcás dónde esperás. Los tiempos abajo son estimados a tu punto una vez marcado.</div>`;
+  html += myWaiting.length
+    ? `<div class="hint">Tu punto está marcado; abajo ves el ETA de cada buseta. <a href="#" id="clr" style="color:var(--amber)">Limpiar</a></div>`
+    : `<div class="hint">Marcá dónde espera tu hijo para calcular el tiempo de llegada de la buseta.</div>`;
 
+  // Estado de MIS pasajeros (los marcados desde este dispositivo)
+  const today=new Date().toDateString();
+  const source = mine.filter(p=> p.status!=='done' || (p.droppedAt && new Date(p.droppedAt).toDateString()===today));
+  if(source.length){
+    html += `<div class="grouplabel">Mis pasajeros <span class="count">${source.length}</span></div>`;
+    source.forEach(p=>{
+      let estado, cls, extra='';
+      if(p.status==='onboard'){ estado='En la buseta 🚌'; cls='var(--emerald)'; }
+      else if(p.status==='done'){
+        estado='Entregado ✅'; cls='var(--iris)';
+        const hh = p.droppedAt ? new Date(p.droppedAt).toLocaleTimeString('es-CR',{hour:'2-digit',minute:'2-digit'}) : '';
+        extra = `<div class="s">🏁 ${p.dropAddr||'—'}${hh?` · ${hh}`:''}</div>`;
+      } else { estado='Esperando ⏳'; cls='var(--teal)'; }
+      html += `<div class="card">
+        <div class="badge" style="background:${cls}">🧒</div>
+        <div class="meta"><div class="t">${p.name}</div>
+        <div class="s">${estado}</div>${extra}</div>
+      </div>`;
+    });
+  }
+
+  html += `<div class="grouplabel">Busetas</div>`;
   buses.forEach(b=>{
     const c=ROUTES[b.routeKey].color;
     const eta = ref ? etaMin(b.marker.getLatLng(),ref) : null;
@@ -916,6 +964,7 @@ async function initData(){
     await refreshFromCloud();
     await refreshPositions();
     await refreshPins();
+    await refreshMyPassengers();
     try{
       sb.channel('busetago-rt')
         .on('postgres_changes',{event:'*',schema:'public',table:'entregas'},
@@ -923,7 +972,7 @@ async function initData(){
         .on('postgres_changes',{event:'*',schema:'public',table:'posiciones'},
           ()=>{ refreshPositions(); })
         .on('postgres_changes',{event:'*',schema:'public',table:'esperando'},
-          ()=>{ refreshPins().then(()=>render()); })
+          ()=>{ Promise.all([refreshPins(),refreshMyPassengers()]).then(()=>render()); })
         .subscribe();
     }catch(e){}
   } else {
