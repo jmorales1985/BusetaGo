@@ -367,30 +367,57 @@ async function reverseGeocode(lat,lng){
   }catch(e){ return coordStr(lat,lng); }  // si falla (sin red o bloqueado), deja las coordenadas
 }
 
-/* -------- waiting pins (clientes esperando) -------- */
-const pins = [];
+/* -------- pasajeros esperando (compartidos entre dispositivos vía Supabase) -------- */
+let pins = [];                  // cache de {id, name, lat, lng, status, pickupAddr, marker}
 let placing = false;
+const pinMarkers = new Map();   // id -> marker
 function pinIcon(status){
   const c = status==='onboard' ? 'var(--emerald)' : 'var(--teal)';
   const em = status==='onboard' ? '🧒' : '🙋';
   return L.divIcon({className:'',html:`<div class="wait-pin" style="background:${c}"><span>${em}</span></div>`,
                     iconSize:[34,34],iconAnchor:[6,32]});
 }
-function addPin(lat,lng,name){
+// dibuja/actualiza/borra los marcadores según el arreglo pins
+function renderPins(){
+  const ids=new Set(pins.map(p=>String(p.id)));
+  pins.forEach(p=>{
+    let m=pinMarkers.get(String(p.id));
+    if(!m){ m=L.marker([p.lat,p.lng],{icon:pinIcon(p.status)}).addTo(map); pinMarkers.set(String(p.id),m); }
+    else { m.setLatLng([p.lat,p.lng]); m.setIcon(pinIcon(p.status)); }
+    m.bindPopup(`<b>${p.name}</b><br>${p.status==='onboard'?'A bordo 🧒':'Esperando'}`);
+    p.marker=m;
+  });
+  pinMarkers.forEach((m,id)=>{ if(!ids.has(id)){ map.removeLayer(m); pinMarkers.delete(id);} });
+}
+async function refreshPins(){
+  if(!sb) return;
+  const { data, error } = await sb.from('esperando').select('*')
+    .in('status',['waiting','onboard']).order('created_at',{ascending:true});
+  if(!error && data){
+    pins = data.map(r=>({ id:r.id, name:r.name, lat:r.lat, lng:r.lng,
+                          status:r.status, pickupAddr:r.pickup_addr }));
+    renderPins();
+  }
+}
+async function addPin(lat,lng,name){
   const nm = (name&&name.trim()) ? name.trim() : ('Pasajero '+(pins.length+1));
-  const p={ id:pins.length+1, lat, lng, name:nm, status:'waiting', marker:null };
-  p.marker = L.marker([lat,lng],{ icon:pinIcon('waiting') })
-    .addTo(map).bindPopup(`<b>${nm}</b><br>Esperando`);
-  pins.push(p); render();
+  if(sb){
+    await sb.from('esperando').insert({ name:nm, lat, lng, status:'waiting' });
+    await refreshPins();
+  } else {
+    pins.push({ id:'l'+Date.now(), name:nm, lat, lng, status:'waiting' }); renderPins();
+  }
+  render();
 }
 function pickUp(p){
-  p.status='onboard'; p.marker.setIcon(pinIcon('onboard'));
-  p.marker.setPopupContent(`<b>${p.name}</b><br>A bordo 🧒`);
-  p.pickupTime=new Date();
-  p.pickupCoords=[p.lat,p.lng];
-  p.pickupAddr=coordStr(p.lat,p.lng);          // provisional hasta que resuelva la dirección
-  reverseGeocode(p.lat,p.lng).then(a=>{ p.pickupAddr=a;
-    if(role==='conductor') render(); });
+  if(sb){
+    sb.from('esperando').update({ status:'onboard' }).eq('id',p.id).then(()=>refreshPins());
+    reverseGeocode(p.lat,p.lng).then(a=>{ sb.from('esperando').update({ pickup_addr:a }).eq('id',p.id).then(()=>refreshPins()); });
+  } else {
+    p.status='onboard'; p.pickupAddr=coordStr(p.lat,p.lng);
+    reverseGeocode(p.lat,p.lng).then(a=>{ p.pickupAddr=a; render(); });
+    renderPins();
+  }
   render();
 }
 
@@ -430,9 +457,12 @@ function dropPassengers(ids){
   const my = buses.find(b=>b.id===myBusId);
   const now = new Date();
   const dc = my ? my.marker.getLatLng() : null;
-  const dropped = ids.map(id=>pins.find(x=>x.id==id)).filter(p=>p&&p.status==='onboard');
+  const dropped = ids.map(id=>pins.find(x=>String(x.id)===String(id))).filter(p=>p&&p.status==='onboard');
   if(dropped.length===0) return;
-  dropped.forEach(p=>{ p.status='done'; map.removeLayer(p.marker); selected.delete(p.id); });
+  const dropIds = dropped.map(p=>p.id);
+  // salida inmediata del mapa y de la lista
+  dropped.forEach(p=>{ selected.delete(p.id); const m=pinMarkers.get(String(p.id)); if(m){map.removeLayer(m);pinMarkers.delete(String(p.id));} });
+  pins = pins.filter(p=>!dropIds.some(id=>String(id)===String(p.id)));
   render();
   (async ()=>{
     const dropAddr = dc ? await reverseGeocode(dc.lat,dc.lng) : '—';
@@ -440,6 +470,7 @@ function dropPassengers(ids){
       pickupAddr:p.pickupAddr||'—', dropAddr,
       dropCoords: dc?[dc.lat,dc.lng]:null, driver:my?my.driver:'—', plate:my?my.plate:'—' }));
     await persistReports(rows);
+    if(sb){ await sb.from('esperando').delete().in('id', dropIds); await refreshPins(); }
     if(role==='admin') render();
   })();
 }
@@ -519,7 +550,13 @@ document.getElementById('pinName').addEventListener('keydown',e=>{if(e.key==='En
 map.on('click',e=>{
   if(placing){ askName(e.latlng.lat,e.latlng.lng); }
 });
-function clearPins(){ pins.forEach(p=>map.removeLayer(p.marker)); pins.length=0; render(); }
+async function clearPins(){
+  const waitingIds = pins.filter(p=>p.status==='waiting').map(p=>p.id);
+  if(sb){ if(waitingIds.length) await sb.from('esperando').delete().in('id',waitingIds); await refreshPins(); }
+  else { pins = pins.filter(p=>p.status!=='waiting');
+         pinMarkers.forEach((m,id)=>{ if(!pins.some(p=>String(p.id)===id)){map.removeLayer(m);pinMarkers.delete(id);} }); }
+  render();
+}
 
 function focusBus(b){ map.flyTo(b.marker.getLatLng(),15,{duration:.6});
   b.marker.bindPopup(`<b>${b.driver}</b><br>${b.plate} · ${ROUTES[b.routeKey].name.split('·')[0].trim()}`).openPopup(); }
@@ -646,48 +683,49 @@ function renderDriver(body){
     </div>`;
   });
 
+  const waiting = pins.filter(p=>p.status==='waiting');
+  const onboard = pins.filter(p=>p.status==='onboard');
+
   if(my){
     html += `<div class="switchrow" style="margin-top:12px">
       <div class="l"><div class="t">Compartir mi ubicación (GPS real)</div>
       <div class="s">${my.gps?'Transmitiendo tu posición real':'Usando posición simulada'}</div></div>
       <button class="toggle ${my.gps?'on':''}" id="gpsTgl"></button>
     </div>`;
-    const waiting = pins.filter(p=>p.status==='waiting');
-    const onboard = pins.filter(p=>p.status==='onboard');
-
-    html += `<div class="grouplabel">Esperando <span class="count">${waiting.length}</span></div>`;
-    if(waiting.length===0){
-      html += `<div class="empty">Nadie esperando por ahora.<br>Cambiá a <b>Cliente</b> y tocá el mapa para simularlo.</div>`;
-    } else {
-      waiting.forEach(p=>{
-        const eta=etaMin(my.marker.getLatLng(),[p.lat,p.lng]);
-        html += `<div class="card" data-pin="${p.id}">
-          <div class="badge" style="background:var(--teal)">🙋</div>
-          <div class="meta"><div class="t">${p.name}</div>
-          <div class="s">${haversine(my.marker.getLatLng(),[p.lat,p.lng]).toFixed(1)} km · ${eta} min</div></div>
-          <button class="mini go" data-pick-up="${p.id}">Recoger</button>
-        </div>`;
-      });
-    }
-
-    if(onboard.length>0){
-      const selCount=onboard.filter(p=>selected.has(p.id)).length;
-      html += `<div class="grouplabel">A bordo <span class="count">${onboard.length}</span></div>`;
-      onboard.forEach(p=>{
-        html += `<div class="card">
-          <input type="checkbox" class="chk" data-sel="${p.id}" ${selected.has(p.id)?'checked':''}/>
-          <div class="badge" style="background:var(--emerald)">🧒</div>
-          <div class="meta"><div class="t">${p.name}</div>
-          <div class="s">📍 ${p.pickupAddr||'A bordo'}</div></div>
-        </div>`;
-      });
-      html += `<div class="actions" style="margin-top:10px">
-        <button class="btn ${selCount?'drop':'ghost'}" id="dropSel" ${selCount?'':'disabled'}>Dejar seleccionados (${selCount})</button>
-        <button class="btn primary" id="dropAll">🏫 Dejar todos</button>
-      </div>`;
-    }
   } else {
-    html += `<div class="empty" style="margin-top:8px">Elegí una buseta arriba para empezar a transmitir.</div>`;
+    html += `<div class="empty" style="margin:12px 0 4px">Elegí una buseta arriba para recoger pasajeros y transmitir tu ubicación.</div>`;
+  }
+
+  html += `<div class="grouplabel">Esperando <span class="count">${waiting.length}</span></div>`;
+  if(waiting.length===0){
+    html += `<div class="empty">Nadie esperando por ahora.<br>En <b>Cliente</b> (o desde otro dispositivo) se marca en el mapa.</div>`;
+  } else {
+    waiting.forEach(p=>{
+      const info = my ? `${haversine(my.marker.getLatLng(),[p.lat,p.lng]).toFixed(1)} km · ${etaMin(my.marker.getLatLng(),[p.lat,p.lng])} min` : 'Esperando';
+      html += `<div class="card" data-pin="${p.id}">
+        <div class="badge" style="background:var(--teal)">🙋</div>
+        <div class="meta"><div class="t">${p.name}</div>
+        <div class="s">${info}</div></div>
+        ${my?`<button class="mini go" data-pick-up="${p.id}">Recoger</button>`:''}
+      </div>`;
+    });
+  }
+
+  if(my && onboard.length>0){
+    const selCount=onboard.filter(p=>selected.has(p.id)).length;
+    html += `<div class="grouplabel">A bordo <span class="count">${onboard.length}</span></div>`;
+    onboard.forEach(p=>{
+      html += `<div class="card">
+        <input type="checkbox" class="chk" data-sel="${p.id}" ${selected.has(p.id)?'checked':''}/>
+        <div class="badge" style="background:var(--emerald)">🧒</div>
+        <div class="meta"><div class="t">${p.name}</div>
+        <div class="s">📍 ${p.pickupAddr||'A bordo'}</div></div>
+      </div>`;
+    });
+    html += `<div class="actions" style="margin-top:10px">
+      <button class="btn ${selCount?'drop':'ghost'}" id="dropSel" ${selCount?'':'disabled'}>Dejar seleccionados (${selCount})</button>
+      <button class="btn primary" id="dropAll">🏫 Dejar todos</button>
+    </div>`;
   }
   body.innerHTML=html;
 
@@ -708,7 +746,7 @@ function renderDriver(body){
     e.stopPropagation(); pickUp(pins.find(x=>x.id==el.dataset.pickUp));
   });
   body.querySelectorAll('[data-sel]').forEach(el=>el.onchange=(e)=>{
-    e.stopPropagation(); const id=Number(el.dataset.sel);
+    e.stopPropagation(); const id=el.dataset.sel;
     if(el.checked) selected.add(id); else selected.delete(id); render();
   });
   if($('#dropSel')) $('#dropSel').onclick=()=>dropPassengers([...selected]);
@@ -877,12 +915,15 @@ async function initData(){
   if(sb){
     await refreshFromCloud();
     await refreshPositions();
+    await refreshPins();
     try{
       sb.channel('busetago-rt')
         .on('postgres_changes',{event:'*',schema:'public',table:'entregas'},
           ()=>{ refreshFromCloud().then(()=>{ if(role==='admin') render(); }); })
         .on('postgres_changes',{event:'*',schema:'public',table:'posiciones'},
           ()=>{ refreshPositions(); })
+        .on('postgres_changes',{event:'*',schema:'public',table:'esperando'},
+          ()=>{ refreshPins().then(()=>render()); })
         .subscribe();
     }catch(e){}
   } else {
