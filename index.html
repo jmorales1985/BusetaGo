@@ -1036,7 +1036,7 @@ function tick(){
   if(sb) applyLivePositions();              // mantiene el movimiento en vivo y limpia posiciones viejas
   const modalOpen=document.getElementById('nameModal').classList.contains('show');
   if(modalOpen) return;
-  if(role==='cliente'){ render(); }
+  if(role==='cliente'){ if(!sb || authUser) render(); }               // no refrescar mientras el padre escribe su login
   else if(role==='conductor' && driverAuth && !showForm){ render(); }   // live ETAs, but not while typing
   else if(role==='admin' && adminAuth){ render(); }                     // live report list
 }
