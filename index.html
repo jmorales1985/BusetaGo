@@ -321,10 +321,37 @@ function makeBus(driver, plate, routeKey, p0){
   b.marker.on('click',()=>focusBus(b));
   buses.push(b); return b;
 }
-// starting fleet — three registered drivers, one per corridor
-makeBus('Marco Jiménez','SJB-472','S_LA',0.2);
-makeBus('Silvia Rojas','CB-1180','S_SL',0.9);
-makeBus('Diego Castro','HB-905','S_EC',1.4);
+const DEFAULT_FLEET=[
+  {driver:'Marco Jiménez',plate:'SJB-472',route:'S_LA'},
+  {driver:'Silvia Rojas', plate:'CB-1180',route:'S_SL'},
+  {driver:'Diego Castro', plate:'HB-905', route:'S_EC'}
+];
+// Sin nube: flota local por defecto. Con nube: se carga desde la tabla busetas.
+if(!sb){ DEFAULT_FLEET.forEach((d,i)=>makeBus(d.driver,d.plate,d.route,i*0.7)); }
+
+// Sincroniza la flota local con la tabla compartida "busetas"
+async function reloadFleet(){
+  if(!sb) return;
+  let { data, error } = await sb.from('busetas').select('*').order('created_at',{ascending:true});
+  if(error) return;
+  if(!data || data.length===0){
+    await sb.from('busetas').insert(DEFAULT_FLEET);
+    ({ data } = await sb.from('busetas').select('*').order('created_at',{ascending:true}));
+  }
+  const rows = data||[];
+  const plates = new Set(rows.map(r=>r.plate));
+  rows.forEach((r,i)=>{
+    if(!ROUTES[r.route]) return;
+    let b=buses.find(x=>x.plate===r.plate);
+    if(!b){ b=makeBus(r.driver,r.plate,r.route,(i%3)*0.7); }
+    else { b.driver=r.driver;
+      if(b.routeKey!==r.route){ b.routeKey=r.route; b.marker.setIcon(busIcon(ROUTES[r.route].color)); } }
+    b.regId=r.id;
+  });
+  for(let i=buses.length-1;i>=0;i--){
+    if(!plates.has(buses[i].plate)){ map.removeLayer(buses[i].marker); buses.splice(i,1); }
+  }
+}
 
 function posOf(b){
   const path = ROUTES[b.routeKey].path;
@@ -400,14 +427,17 @@ async function refreshPins(){
   }
 }
 
-/* pasajeros marcados desde ESTE dispositivo (para que el padre vea el estado de su hijo) */
-const MINE_KEY='busetago_mine';
-let myIds = (()=>{ try{ return JSON.parse(localStorage.getItem(MINE_KEY))||[]; }catch(e){ return []; } })();
+/* pasajeros ligados a la CUENTA del padre (Supabase Auth) */
+let authUser=null, authName='';
 let myPax = [];
-function rememberMine(id){ if(!myIds.includes(id)){ myIds.push(id); try{ localStorage.setItem(MINE_KEY,JSON.stringify(myIds)); }catch(e){} } }
+function slugEmail(name){
+  const s=String(name).toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'')
+    .replace(/[^a-z0-9]+/g,'.').replace(/^\.+|\.+$/g,'');
+  return (s||'user')+'@buseta.go';
+}
 async function refreshMyPassengers(){
-  if(!sb || myIds.length===0){ myPax=[]; return; }
-  const { data, error } = await sb.from('esperando').select('*').in('id', myIds);
+  if(!sb || !authUser){ myPax=[]; return; }
+  const { data, error } = await sb.from('esperando').select('*').eq('user_id',authUser.id);
   if(!error && data){
     myPax = data.map(r=>({ id:r.id, name:r.name, status:r.status, lat:r.lat, lng:r.lng,
       dropAddr:r.drop_addr, droppedAt:r.dropped_at }));
@@ -416,8 +446,7 @@ async function refreshMyPassengers(){
 async function addPin(lat,lng,name){
   const nm = (name&&name.trim()) ? name.trim() : ('Pasajero '+(pins.length+1));
   if(sb){
-    const { data } = await sb.from('esperando').insert({ name:nm, lat, lng, status:'waiting' }).select();
-    if(data && data[0]){ rememberMine(data[0].id); }
+    await sb.from('esperando').insert({ name:nm, lat, lng, status:'waiting', user_id: authUser?authUser.id:null });
     await refreshPins(); await refreshMyPassengers();
   } else {
     pins.push({ id:'l'+Date.now(), name:nm, lat, lng, status:'waiting' }); renderPins();
@@ -574,7 +603,6 @@ async function clearPins(){
   const waitingIds = mine.filter(p=>p.status==='waiting').map(p=>p.id);
   if(sb){
     if(waitingIds.length) await sb.from('esperando').delete().in('id',waitingIds);
-    myIds = myIds.filter(id=>!waitingIds.includes(id)); try{ localStorage.setItem(MINE_KEY,JSON.stringify(myIds)); }catch(e){}
     await refreshPins(); await refreshMyPassengers();
   } else {
     pins = pins.filter(p=>p.status!=='waiting');
@@ -629,8 +657,9 @@ document.getElementById('sheetHead').addEventListener('click',toggleCollapse);
 document.querySelector('.handle').addEventListener('click',e=>{e.stopPropagation();toggleCollapse();});
 
 function renderClient(body){
+  if(sb && !authUser){ renderParentAuth(body); return; }
   $('#sheetTitle').textContent='Busetas en vivo';
-  $('#sheetSub').textContent='Seguí la buseta y marcá dónde espera tu hijo.';
+  $('#sheetSub').textContent = authName ? `Hola, ${authName}` : 'Seguí la buseta y marcá dónde espera tu hijo.';
   const mine = sb ? myPax : pins;
   const myWaiting = mine.filter(p=>p.status==='waiting');
   const ref = myWaiting.length ? [myWaiting[myWaiting.length-1].lat, myWaiting[myWaiting.length-1].lng] : null;
@@ -685,6 +714,57 @@ function renderClient(body){
   body.querySelectorAll('[data-focus]').forEach(el=>el.onclick=()=>{
     focusBus(buses.find(b=>b.id===el.dataset.focus));
   });
+  if(sb && authUser){
+    body.insertAdjacentHTML('beforeend','<a href="#" class="logout" id="logoutP">Cerrar sesión</a>');
+    $('#logoutP').onclick=async e=>{ e.preventDefault(); await sb.auth.signOut(); authUser=null; authName=''; myPax=[]; render(); };
+  }
+}
+
+let authMode='login';   // 'login' | 'register'
+function renderParentAuth(body){
+  $('#sheetTitle').textContent = authMode==='login' ? 'Ingresá a tu cuenta' : 'Creá tu cuenta';
+  $('#sheetSub').textContent = 'Para seguir la buseta de tu hijo.';
+  body.innerHTML=`
+    <div class="form show" style="align-items:stretch">
+      <div class="lock">👤</div>
+      <label>Nombre</label>
+      <input id="pName" placeholder="Ej: Ana Solís" autocomplete="off"/>
+      <label>Clave</label>
+      <input id="pPass" type="password" placeholder="Mínimo 6 caracteres" autocomplete="off"/>
+      <button class="btn primary" id="pGo" style="margin-top:4px">${authMode==='login'?'Ingresar':'Crear cuenta'}</button>
+      <div class="err" id="pErr"></div>
+    </div>
+    <div class="hint" style="text-align:center">
+      ${authMode==='login'
+        ? '¿No tenés cuenta? <a href="#" id="toReg" style="color:var(--amber)">Registrate</a>'
+        : '¿Ya tenés cuenta? <a href="#" id="toLogin" style="color:var(--amber)">Ingresá</a>'}
+    </div>`;
+  const go=async ()=>{
+    const name=$('#pName').value.trim(), pass=$('#pPass').value;
+    if(!name){ $('#pErr').textContent='Escribí tu nombre.'; return; }
+    if(pass.length<6){ $('#pErr').textContent='La clave debe tener al menos 6 caracteres.'; return; }
+    $('#pErr').textContent='...';
+    const email=slugEmail(name);
+    if(authMode==='register'){
+      const { data, error } = await sb.auth.signUp({ email, password:pass, options:{ data:{ name } } });
+      if(error){ $('#pErr').textContent = /registered|already/i.test(error.message) ? 'Ese nombre ya existe. Probá con otro o ingresá.' : error.message; return; }
+      if(!data.session){ // por si quedó activada la confirmación de correo
+        const r = await sb.auth.signInWithPassword({ email, password:pass });
+        if(r.error){ $('#pErr').textContent='Cuenta creada. Ya podés ingresar.'; authMode='login'; render(); return; }
+      }
+    } else {
+      const { error } = await sb.auth.signInWithPassword({ email, password:pass });
+      if(error){ $('#pErr').textContent='Nombre o clave incorrectos.'; return; }
+    }
+    const { data:{ session } } = await sb.auth.getSession();
+    authUser = session?session.user:null; authName = authUser?.user_metadata?.name || name;
+    await refreshMyPassengers(); render();
+  };
+  $('#pGo').onclick=go;
+  $('#pPass').addEventListener('keydown',e=>{if(e.key==='Enter')go();});
+  if($('#toReg')) $('#toReg').onclick=e=>{e.preventDefault();authMode='register';render();};
+  if($('#toLogin')) $('#toLogin').onclick=e=>{e.preventDefault();authMode='login';render();};
+  setTimeout(()=>$('#pName').focus(),50);
 }
 
 function useMyLocation(){
@@ -778,11 +858,18 @@ function renderDriver(body){
   body.innerHTML=html;
 
   $('#toggleForm').onclick=()=>{ showForm=!showForm; render(); };
-  if($('#fSave')) $('#fSave').onclick=()=>{
+  if($('#fSave')) $('#fSave').onclick=async ()=>{
     const n=$('#fName').value.trim(), pl=$('#fPlate').value.trim(), rt=$('#fRoute').value;
     if(!n||!pl){ alert('Completá nombre y placa.'); return; }
-    const b=makeBus(n,pl,rt,0); myBusId=b.id; showForm=false;
-    focusBus(b); render();
+    if(sb){
+      const { error } = await sb.from('busetas').insert({ driver:n, plate:pl, route:rt });
+      if(error){ alert('No se pudo registrar (¿la placa ya existe?).'); return; }
+      await reloadFleet();
+      const b=buses.find(x=>x.plate===pl); if(b){ myBusId=b.id; focusBus(b); }
+    } else {
+      const b=makeBus(n,pl,rt,0); myBusId=b.id; focusBus(b);
+    }
+    showForm=false; render();
   };
   body.querySelectorAll('[data-pick]').forEach(el=>el.onclick=()=>{
     myBusId=el.dataset.pick; const b=buses.find(x=>x.id===myBusId); focusBus(b); render();
@@ -961,12 +1048,22 @@ setInterval(clock,1000); clock();
 /* arranque de datos: nube (Supabase) o respaldo local */
 async function initData(){
   if(sb){
+    try{
+      const { data:{ session } } = await sb.auth.getSession();
+      if(session){ authUser=session.user; authName=authUser.user_metadata?.name||''; }
+      sb.auth.onAuthStateChange((_e,sess)=>{
+        authUser = sess?sess.user:null; authName = authUser?.user_metadata?.name||'';
+      });
+    }catch(e){}
+    await reloadFleet();
     await refreshFromCloud();
     await refreshPositions();
     await refreshPins();
     await refreshMyPassengers();
     try{
       sb.channel('busetago-rt')
+        .on('postgres_changes',{event:'*',schema:'public',table:'busetas'},
+          ()=>{ reloadFleet().then(()=>render()); })
         .on('postgres_changes',{event:'*',schema:'public',table:'entregas'},
           ()=>{ refreshFromCloud().then(()=>{ if(role==='admin') render(); }); })
         .on('postgres_changes',{event:'*',schema:'public',table:'posiciones'},
