@@ -11,6 +11,33 @@ conductores se registran con clave, eligen su unidad y comparten su ubicación G
 
 ---
 
+## ☁️ Base de datos central (Supabase)
+
+Para que **varios conductores** registren entregas y el **admin** las vea todas juntas y
+en tiempo real, la app usa [Supabase](https://supabase.com) (Postgres + Realtime).
+
+Configuración:
+
+1. Creá un proyecto en supabase.com (plan gratis).
+2. En **SQL Editor**, pegá y ejecutá `supabase.sql` (tabla `entregas`) y también
+   `supabase-posiciones.sql` (tabla `posiciones` para el GPS en vivo).
+3. En **Project Settings → API**, copiá el **Project URL** y la **anon/publishable key**.
+4. Pegalos en `index.html`, al inicio del script:
+   ```js
+   const SUPABASE_URL      = 'https://xxxxxxxx.supabase.co';
+   const SUPABASE_ANON_KEY = 'eyJ...';
+   ```
+5. Subí el `index.html` al repo → Vercel redepliega.
+
+Si los valores quedan vacíos, la app sigue funcionando pero guarda el historial solo en el
+dispositivo (respaldo local).
+
+> **Nota de seguridad:** la *anon key* es pública por diseño (va en el navegador) y el acceso
+> se controla con las políticas RLS. En esta etapa las políticas son abiertas (MVP). El
+> siguiente endurecimiento es **Supabase Auth** con cuentas reales de conductor y admin.
+
+---
+
 ## 🗺️ Rutas
 
 Esquema tipo escolar con Sabanilla como punto central:
@@ -29,6 +56,8 @@ Esquema tipo escolar con Sabanilla como punto central:
 
 ### Vista Cliente
 - Mapa en vivo con las busetas activas y su ruta.
+- Cuando un conductor comparte su GPS, su buseta se mueve **en tiempo real** en el mapa de
+  todos los dispositivos (vía Supabase). Las busetas sin GPS activo se muestran simuladas.
 - Botón **"Marcar dónde espero"**: al tocar el mapa se pide el **nombre** del pasajero.
 - Botón **"Usar mi ubicación"** (GPS del navegador), también pide el nombre.
 - **ETA estimado** de cada buseta hasta el punto de espera, actualizado en vivo.

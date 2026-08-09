@@ -255,6 +255,7 @@
 </div>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script>
 /* ============================================================
    BusetaGo — rastreo de busetas en tiempo real (single-file app)
@@ -262,6 +263,18 @@
    - Cliente: marca puntos de espera y ve ETA por buseta
    - Conductor: se registra, elige buseta y puede compartir GPS real
    ============================================================ */
+
+/* ===== Supabase (base de datos central) =====
+   Pegá aquí los dos valores de tu proyecto (Project Settings → API).
+   Si los dejás vacíos, la app usa memoria local del dispositivo como respaldo. */
+const SUPABASE_URL      = 'https://vvohzbzsuikcbrmafmdi.supabase.co';
+const SUPABASE_ANON_KEY = 'sb_publishable_oJrl2k-ZQCu4jva2aA3B_w_0frGVzpX';
+let sb = null;
+try {
+  if (SUPABASE_URL && SUPABASE_ANON_KEY && window.supabase) {
+    sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+  }
+} catch (e) { sb = null; }
 
 const map = L.map('map', { zoomControl:false }).setView([10.0790, -84.2180], 14);
 L.control.zoom({ position:'topright' }).addTo(map);
@@ -296,15 +309,15 @@ const ROUTES = {
 
 let seq = 0;
 const buses = [];
+function busIcon(color){
+  return L.divIcon({className:'',html:`<div class="bus-badge" style="--c:${color}">🚐</div>`,
+                    iconSize:[38,38],iconAnchor:[19,19]});
+}
 function makeBus(driver, plate, routeKey, p0){
   const b = { id:'b'+(++seq), driver, plate, routeKey,
               p:(p0??Math.random()*1.5),
-              speed:0.06+Math.random()*0.02, gps:false, marker:null };
-  const c = ROUTES[routeKey].color;
-  b.marker = L.marker(posOf(b), {
-    icon:L.divIcon({className:'',html:`<div class="bus-badge" style="--c:${c}">🚐</div>`,
-                    iconSize:[38,38],iconAnchor:[19,19]}), zIndexOffset:500
-  }).addTo(map);
+              speed:0.06+Math.random()*0.02, gps:false, live:false, marker:null };
+  b.marker = L.marker(posOf(b), { icon:busIcon(ROUTES[routeKey].color), zIndexOffset:500 }).addTo(map);
   b.marker.on('click',()=>focusBus(b));
   buses.push(b); return b;
 }
@@ -321,14 +334,12 @@ function posOf(b){
   return [a[0]+(c[0]-a[0])*t, a[1]+(c[1]-a[1])*t];
 }
 function stepBus(b){
-  if(b.gps) return;
+  if(b.gps || b.live) return;               // GPS propio o posición en vivo remota manda
   const path = ROUTES[b.routeKey].path;
   b.p += b.speed;
   if(b.p >= path.length-1){                 // llegó al destino → toma la ruta de regreso
     b.routeKey = ROUTES[b.routeKey].ret; b.p = 0;
-    const c=ROUTES[b.routeKey].color;
-    b.marker.setIcon(L.divIcon({className:'',html:`<div class="bus-badge" style="--c:${c}">🚐</div>`,
-                    iconSize:[38,38],iconAnchor:[19,19]}));
+    b.marker.setIcon(busIcon(ROUTES[b.routeKey].color));
   }
   b.marker.setLatLng(posOf(b));
 }
@@ -383,36 +394,109 @@ function pickUp(p){
   render();
 }
 
-/* -------- reports (historial de entregas, persistente) -------- */
+/* -------- reports (historial de entregas) -------- */
+/* Con Supabase configurado, se guardan en la nube (central, todos los conductores → admin).
+   Sin Supabase, respaldo en este dispositivo (localStorage). */
 const REPORTS_KEY='busetago_reports';
 function loadReports(){
   try{ const raw=localStorage.getItem(REPORTS_KEY);
        if(raw){ const arr=JSON.parse(raw); if(Array.isArray(arr)) return arr; } }catch(e){}
   return [];
 }
-function saveReports(){
-  try{ localStorage.setItem(REPORTS_KEY, JSON.stringify(reports)); }catch(e){}
-}
-let reports = loadReports();   // {t:ISO, passenger, pickupAddr, dropAddr, dropCoords, driver, plate}
-const selected = new Set();     // ids of onboard passengers selected to drop together
+function saveReports(){ try{ localStorage.setItem(REPORTS_KEY, JSON.stringify(reports)); }catch(e){} }
 
-// Dejar pasajeros directamente en la ubicación actual de la buseta (sin elegir destino)
+let reports = [];               // {t, passenger, pickupAddr, dropAddr, dropCoords, driver, plate}
+const selected = new Set();
+
+const rowToRep = d => ({ t:d.created_at, passenger:d.passenger, pickupAddr:d.pickup_addr,
+  dropAddr:d.drop_addr, dropCoords:d.drop_coords, driver:d.driver, plate:d.plate });
+const repToRow = r => ({ created_at:r.t, passenger:r.passenger, pickup_addr:r.pickupAddr,
+  drop_addr:r.dropAddr, drop_coords:r.dropCoords, driver:r.driver, plate:r.plate });
+
+async function refreshFromCloud(){
+  if(!sb) return;
+  const { data, error } = await sb.from('entregas').select('*').order('created_at',{ascending:true});
+  if(!error && data){ reports = data.map(rowToRep); }
+}
+async function persistReports(rows){
+  if(sb){
+    const { error } = await sb.from('entregas').insert(rows.map(repToRow));
+    if(!error){ await refreshFromCloud(); } else { reports.push(...rows); }
+  } else { reports.push(...rows); saveReports(); }
+}
+
+// Dejar pasajeros en la ubicación actual; UI inmediata, guardado en segundo plano
 function dropPassengers(ids){
   const my = buses.find(b=>b.id===myBusId);
   const now = new Date();
-  const dc = my ? my.marker.getLatLng() : null;   // ubicación actual = dónde se deja
-  ids.forEach(id=>{
-    const p=pins.find(x=>x.id==id); if(!p||p.status!=='onboard') return;
-    const rep={ t:now.toISOString(), passenger:p.name,
-                pickupAddr:p.pickupAddr||'—',
-                dropCoords: dc?[dc.lat,dc.lng]:null,
-                dropAddr: dc?coordStr(dc.lat,dc.lng):'—',
-                driver:my?my.driver:'—', plate:my?my.plate:'—' };
-    reports.push(rep);
-    if(dc) reverseGeocode(dc.lat,dc.lng).then(a=>{ rep.dropAddr=a; saveReports(); if(role==='admin') render(); });
-    p.status='done'; map.removeLayer(p.marker); selected.delete(p.id);
+  const dc = my ? my.marker.getLatLng() : null;
+  const dropped = ids.map(id=>pins.find(x=>x.id==id)).filter(p=>p&&p.status==='onboard');
+  if(dropped.length===0) return;
+  dropped.forEach(p=>{ p.status='done'; map.removeLayer(p.marker); selected.delete(p.id); });
+  render();
+  (async ()=>{
+    const dropAddr = dc ? await reverseGeocode(dc.lat,dc.lng) : '—';
+    const rows = dropped.map(p=>({ t:now.toISOString(), passenger:p.name,
+      pickupAddr:p.pickupAddr||'—', dropAddr,
+      dropCoords: dc?[dc.lat,dc.lng]:null, driver:my?my.driver:'—', plate:my?my.plate:'—' }));
+    await persistReports(rows);
+    if(role==='admin') render();
+  })();
+}
+
+/* -------- posiciones en vivo (GPS compartido entre dispositivos) -------- */
+const livePos = new Map();       // plate -> {lat,lng,driver,route,ts}
+const remoteMarkers = new Map(); // plate -> marker (busetas de otros dispositivos)
+const LIVE_TTL = 30000;          // ms: una posición se considera "en vivo" si es reciente
+
+function applyLivePositions(){
+  const now=Date.now();
+  // 1) busetas locales: si su placa está transmitiendo en vivo, seguimos esa posición
+  buses.forEach(b=>{
+    if(b.gps) return;                       // mi propio GPS ya manda
+    const lp=livePos.get(b.plate);
+    if(lp && now-lp.ts < LIVE_TTL){ b.live=true; b.marker.setLatLng([lp.lat,lp.lng]); }
+    else b.live=false;
   });
-  saveReports(); render();
+  // 2) placas remotas que no están en la flota local → marcador propio
+  const localPlates=new Set(buses.map(b=>b.plate));
+  livePos.forEach((lp,plate)=>{
+    if(localPlates.has(plate)) return;
+    const fresh = now-lp.ts < LIVE_TTL;
+    let m=remoteMarkers.get(plate);
+    if(!fresh){ if(m){ map.removeLayer(m); remoteMarkers.delete(plate);} return; }
+    if(!m){
+      m=L.marker([lp.lat,lp.lng],{icon:busIcon('#0E9F6E'),zIndexOffset:600})
+        .addTo(map).bindPopup(`<b>${lp.driver||'Buseta'}</b><br>${plate} · GPS en vivo`);
+      remoteMarkers.set(plate,m);
+    } else { m.setLatLng([lp.lat,lp.lng]); }
+  });
+  // 3) limpiar marcadores remotos que ya no están
+  remoteMarkers.forEach((m,plate)=>{ if(!livePos.has(plate)){ map.removeLayer(m); remoteMarkers.delete(plate);} });
+}
+
+async function refreshPositions(){
+  if(!sb) return;
+  const { data, error } = await sb.from('posiciones').select('*');
+  if(!error && data){
+    livePos.clear();
+    data.forEach(r=>livePos.set(r.plate,{lat:r.lat,lng:r.lng,driver:r.driver,route:r.route,ts:new Date(r.updated_at).getTime()}));
+    applyLivePositions();
+  }
+}
+
+let lastBroadcast=0;
+async function broadcastPosition(b,lat,lng){
+  if(!sb) return;
+  const t=Date.now(); if(t-lastBroadcast<2000) return;  // como máximo cada 2s
+  lastBroadcast=t;
+  try{ await sb.from('posiciones').upsert(
+    { plate:b.plate, driver:b.driver, route:b.routeKey, lat, lng, updated_at:new Date().toISOString() },
+    { onConflict:'plate' }); }catch(e){}
+}
+async function stopBroadcast(b){
+  if(!sb||!b) return;
+  try{ await sb.from('posiciones').delete().eq('plate',b.plate); }catch(e){}
 }
 
 /* ask for the passenger name before dropping the pin */
@@ -503,7 +587,7 @@ function renderClient(body){
       <div class="badge" style="background:${c}">🚐</div>
       <div class="meta">
         <div class="t">${ROUTES[b.routeKey].name.split('·')[0].trim()}</div>
-        <div class="s">${b.driver} · ${b.plate} <span class="pill" style="margin-left:4px"><span class="d"></span>${b.gps?'GPS':'EN VIVO'}</span></div>
+        <div class="s">${b.driver} · ${b.plate} <span class="pill" style="margin-left:4px"><span class="d"></span>${(b.gps||b.live)?'GPS':'EN VIVO'}</span></div>
       </div>
       <div class="eta">${eta?`<div class="n">${eta}</div><div class="u">MIN</div>`:`<div class="u" style="font-size:11px">EN<br>RUTA</div>`}</div>
     </div>`;
@@ -706,11 +790,16 @@ function renderAdmin(body){
       <button class="btn ghost" id="clrRep">Limpiar historial</button>
     </div>`;
   }
-  html+=`<div class="hint" style="margin-top:10px">El historial se guarda en este dispositivo y se conserva aunque recargues. Con backend (Supabase) quedaría centralizado y accesible desde cualquier dispositivo.</div>`;
+  html+=`<div class="hint" style="margin-top:10px">${sb?'Historial central en la nube (Supabase): todos los conductores registran aquí y se actualiza en tiempo real.':'Sin conexión a la nube: el historial se guarda solo en este dispositivo. Configurá Supabase para centralizarlo.'}</div>`;
   body.innerHTML=html;
 
   body.querySelectorAll('[data-f]').forEach(el=>el.onclick=()=>{ adminFilter=el.dataset.f; render(); });
-  if($('#clrRep')) $('#clrRep').onclick=()=>{ if(confirm('¿Borrar TODO el historial guardado? Esta acción no se puede deshacer.')){reports.length=0;saveReports();render();} };
+  if($('#clrRep')) $('#clrRep').onclick=async ()=>{
+    if(!confirm('¿Borrar TODO el historial guardado? Esta acción no se puede deshacer.')) return;
+    if(sb){ await sb.from('entregas').delete().gt('id',0); await refreshFromCloud(); }
+    else { reports.length=0; saveReports(); }
+    render();
+  };
   if($('#expCsv')) $('#expCsv').onclick=exportCsv;
 
   body.insertAdjacentHTML('beforeend','<a href="#" class="logout" id="logoutA">Cerrar sesión de admin</a>');
@@ -754,11 +843,15 @@ function renderAdminLogin(body){
 let watchId=null;
 function toggleGps(b){
   if(!b) return;
-  if(b.gps){ b.gps=false; if(watchId!=null){navigator.geolocation.clearWatch(watchId);watchId=null;} render(); return; }
+  if(b.gps){ b.gps=false; if(watchId!=null){navigator.geolocation.clearWatch(watchId);watchId=null;} stopBroadcast(b); render(); return; }
   if(!navigator.geolocation){ alert('Sin soporte de GPS en este navegador.'); return; }
+  let firstFix=true;
   watchId=navigator.geolocation.watchPosition(
-    p=>{ b.gps=true; b.marker.setLatLng([p.coords.latitude,p.coords.longitude]);
-         map.flyTo([p.coords.latitude,p.coords.longitude],15); render(); },
+    p=>{ b.gps=true; const lat=p.coords.latitude, lng=p.coords.longitude;
+         b.marker.setLatLng([lat,lng]);
+         if(firstFix){ map.flyTo([lat,lng],15); firstFix=false; }
+         broadcastPosition(b,lat,lng);       // ← comparte la ubicación con los demás dispositivos
+         render(); },
     ()=>{ alert('No se pudo activar el GPS (permiso denegado). Se mantiene la posición simulada.'); },
     { enableHighAccuracy:true, maximumAge:2000 }
   );
@@ -767,6 +860,7 @@ function toggleGps(b){
 /* clock + animation loop */
 function tick(){
   buses.forEach(stepBus);
+  if(sb) applyLivePositions();              // mantiene el movimiento en vivo y limpia posiciones viejas
   const modalOpen=document.getElementById('nameModal').classList.contains('show');
   if(modalOpen) return;
   if(role==='cliente'){ render(); }
@@ -778,7 +872,25 @@ function clock(){ const d=new Date();
   document.title='BusetaGo · '+d.toLocaleTimeString('es-CR',{hour:'2-digit',minute:'2-digit'}); }
 setInterval(clock,1000); clock();
 
-render();
+/* arranque de datos: nube (Supabase) o respaldo local */
+async function initData(){
+  if(sb){
+    await refreshFromCloud();
+    await refreshPositions();
+    try{
+      sb.channel('busetago-rt')
+        .on('postgres_changes',{event:'*',schema:'public',table:'entregas'},
+          ()=>{ refreshFromCloud().then(()=>{ if(role==='admin') render(); }); })
+        .on('postgres_changes',{event:'*',schema:'public',table:'posiciones'},
+          ()=>{ refreshPositions(); })
+        .subscribe();
+    }catch(e){}
+  } else {
+    reports = loadReports();
+  }
+  render();
+}
+initData();
 </script>
 </body>
 </html>
