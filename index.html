@@ -1078,12 +1078,40 @@ function clock(){ const d=new Date();
   document.title='BusetaGo · '+d.toLocaleTimeString('es-CR',{hour:'2-digit',minute:'2-digit'}); }
 setInterval(clock,1000); clock();
 
+/* ---- cierre de sesión por inactividad (10 min) ---- */
+const IDLE_MS = 10*60*1000;
+const ACT_KEY = 'busetago_last_activity';
+let storedLast = (()=>{ try{ return parseInt(localStorage.getItem(ACT_KEY)||'0',10)||0; }catch(e){ return 0; } })();
+let lastActLocal = Date.now();
+function markActivity(){ lastActLocal=Date.now(); try{ localStorage.setItem(ACT_KEY,String(lastActLocal)); }catch(e){} }
+function onUserActivity(){ if(Date.now()-lastActLocal>3000) markActivity(); }
+['mousedown','keydown','touchstart','click','scroll','mousemove'].forEach(ev=>
+  window.addEventListener(ev,onUserActivity,{passive:true}));
+
+async function idleLogout(){
+  let changed=false;
+  if(sb && authUser){ try{ await sb.auth.signOut(); }catch(e){} authUser=null; authName=''; myPax=[]; myBusId=null; changed=true; }
+  if(adminAuth){ adminAuth=false; changed=true; }
+  if(changed){ try{ alert('Tu sesión se cerró por inactividad.'); }catch(e){} render(); }
+}
+async function checkIdle(){
+  let last=lastActLocal;
+  try{ const s=parseInt(localStorage.getItem(ACT_KEY)||'0',10); if(s) last=s; }catch(e){}
+  if((authUser || adminAuth) && Date.now()-last > IDLE_MS){ await idleLogout(); }
+}
+setInterval(checkIdle, 20000);
+
 /* arranque de datos: nube (Supabase) o respaldo local */
 async function initData(){
   if(sb){
     try{
       const { data:{ session } } = await sb.auth.getSession();
       if(session){ authUser=session.user; authName=authUser.user_metadata?.name||''; }
+      // Si volvió después de 10+ min de inactividad, cerrar la sesión guardada
+      if(authUser && storedLast && (Date.now()-storedLast > IDLE_MS)){
+        try{ await sb.auth.signOut(); }catch(e){} authUser=null; authName='';
+      }
+      markActivity();
       sb.auth.onAuthStateChange((_e,sess)=>{
         authUser = sess?sess.user:null; authName = authUser?.user_metadata?.name||'';
       });
