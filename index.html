@@ -430,11 +430,14 @@ async function refreshPins(){
 /* pasajeros ligados a la CUENTA del padre (Supabase Auth) */
 let authUser=null, authName='';
 let myPax = [];
-function slugEmail(name){
+function slugEmail(name, sub){
   const s=String(name).toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'')
     .replace(/[^a-z0-9]+/g,'.').replace(/^\.+|\.+$/g,'');
-  return (s||'user')+'@buseta.go';
+  return (s||'user')+'@'+(sub?sub+'.':'')+'buseta.go';
 }
+function accountRole(u){ return (u && u.user_metadata && u.user_metadata.role) || 'padre'; }
+function isParent(){ return !!(authUser && accountRole(authUser)==='padre'); }
+function isConductor(){ return !!(authUser && accountRole(authUser)==='conductor'); }
 async function refreshMyPassengers(){
   if(!sb || !authUser){ myPax=[]; return; }
   const { data, error } = await sb.from('esperando').select('*').eq('user_id',authUser.id);
@@ -619,9 +622,7 @@ function focusBus(b){ map.flyTo(b.marker.getLatLng(),15,{duration:.6});
 let role='cliente';
 let myBusId=null;      // conductor's selected bus
 let showForm=false;
-const DRIVER_KEY='buseta2026';   // clave de acceso de conductores
 const ADMIN_KEY='admin2026';     // clave de acceso de administrador
-let driverAuth=false;
 let adminAuth=false;
 let adminFilter='today';   // 'today' | 'month' | 'all'
 
@@ -658,7 +659,7 @@ document.getElementById('sheetHead').addEventListener('click',toggleCollapse);
 document.querySelector('.handle').addEventListener('click',e=>{e.stopPropagation();toggleCollapse();});
 
 function renderClient(body){
-  if(sb && !authUser){ renderParentAuth(body); return; }
+  if(sb && !isParent()){ renderParentAuth(body); return; }
   $('#sheetTitle').textContent='Busetas en vivo';
   $('#sheetSub').textContent = authName ? `Hola, ${authName}` : 'Seguí la buseta y marcá dónde espera tu hijo.';
   const mine = sb ? myPax : pins;
@@ -751,7 +752,7 @@ function renderParentAuth(body){
     $('#pErr').textContent='...';
     const email=slugEmail(name);
     if(authMode==='register'){
-      const { data, error } = await sb.auth.signUp({ email, password:pass, options:{ data:{ name } } });
+      const { data, error } = await sb.auth.signUp({ email, password:pass, options:{ data:{ name, role:'padre' } } });
       if(error){ $('#pErr').textContent = /registered|already/i.test(error.message) ? 'Ese nombre ya existe. Probá con otro o ingresá.' : error.message; return; }
       if(!data.session){ // por si quedó activada la confirmación de correo
         const r = await sb.auth.signInWithPassword({ email, password:pass });
@@ -781,17 +782,16 @@ function useMyLocation(){
 }
 
 function renderDriver(body){
-  if(!driverAuth){ renderDriverLogin(body); return; }
+  if(sb && !isConductor()){ renderDriverAuth(body); return; }
   $('#sheetTitle').textContent='Modo conductor';
-  $('#sheetSub').textContent='Registrate, elegí tu buseta y compartí tu ubicación con los pasajeros.';
+  $('#sheetSub').textContent = authName ? `Hola, ${authName}` : 'Elegí tu buseta y compartí tu ubicación.';
   const my = buses.find(b=>b.id===myBusId);
 
   let html = `<div class="actions">
-    <button class="btn ${showForm?'ghost':'primary'}" id="toggleForm">${showForm?'Cerrar':'➕ Registrar conductor'}</button>
+    <button class="btn ${showForm?'ghost':'primary'}" id="toggleForm">${showForm?'Cerrar':'➕ Registrar buseta'}</button>
   </div>`;
 
   html += `<div class="form ${showForm?'show':''}" id="regForm">
-    <label>Nombre del conductor</label><input id="fName" placeholder="Ej: Laura Vargas"/>
     <label>Placa</label><input id="fPlate" placeholder="Ej: BUS-330"/>
     <label>Ruta</label>
     <select id="fRoute">
@@ -864,8 +864,9 @@ function renderDriver(body){
 
   $('#toggleForm').onclick=()=>{ showForm=!showForm; render(); };
   if($('#fSave')) $('#fSave').onclick=async ()=>{
-    const n=$('#fName').value.trim(), pl=$('#fPlate').value.trim(), rt=$('#fRoute').value;
-    if(!n||!pl){ alert('Completá nombre y placa.'); return; }
+    const n = authName || 'Conductor';
+    const pl=$('#fPlate').value.trim(), rt=$('#fRoute').value;
+    if(!pl){ alert('Completá la placa.'); return; }
     if(sb){
       const { error } = await sb.from('busetas').insert({ driver:n, plate:pl, route:rt });
       if(error){ alert('No se pudo registrar (¿la placa ya existe?).'); return; }
@@ -893,28 +894,55 @@ function renderDriver(body){
   if($('#dropAll')) $('#dropAll').onclick=()=>dropPassengers(pins.filter(p=>p.status==='onboard').map(p=>p.id));
   if($('#gpsTgl')) $('#gpsTgl').onclick=()=>toggleGps(my);
 
-  body.insertAdjacentHTML('beforeend','<a href="#" class="logout" id="logout">Cerrar sesión de conductor</a>');
-  $('#logout').onclick=e=>{e.preventDefault();driverAuth=false;render();};
+  body.insertAdjacentHTML('beforeend','<a href="#" class="logout" id="logout">Cerrar sesión</a>');
+  $('#logout').onclick=async e=>{ e.preventDefault(); await sb.auth.signOut(); authUser=null; authName=''; myBusId=null; render(); };
 }
 
-function renderDriverLogin(body){
-  $('#sheetTitle').textContent='Acceso conductor';
-  $('#sheetSub').textContent='Ingresá tu clave para administrar tu buseta.';
+let drvMode='login';   // 'login' | 'register'
+function renderDriverAuth(body){
+  $('#sheetTitle').textContent = drvMode==='login' ? 'Acceso conductor' : 'Cuenta de conductor';
+  $('#sheetSub').textContent = 'Ingresá o creá tu cuenta de conductor.';
+  if(document.getElementById('dName') && body.dataset.drvmode===drvMode){ return; }
+  body.dataset.drvmode=drvMode;
   body.innerHTML=`
     <div class="form show" style="align-items:stretch">
-      <div class="lock">🔒</div>
-      <label>Clave de acceso</label>
-      <input id="drvKey" type="password" placeholder="••••••••" autocomplete="off"/>
-      <button class="btn primary" id="drvEnter" style="margin-top:4px">Ingresar</button>
-      <div class="err" id="drvErr"></div>
+      <div class="lock">🚌</div>
+      <label>Nombre del conductor</label>
+      <input id="dName" placeholder="Ej: Laura Vargas" autocomplete="off"/>
+      <label>Clave</label>
+      <input id="dPass" type="password" placeholder="Mínimo 6 caracteres" autocomplete="off"/>
+      <button class="btn primary" id="dGo" style="margin-top:4px">${drvMode==='login'?'Ingresar':'Crear cuenta'}</button>
+      <div class="err" id="dErr"></div>
+    </div>
+    <div class="hint" style="text-align:center">
+      ${drvMode==='login'
+        ? '¿No tenés cuenta? <a href="#" id="toDReg" style="color:var(--amber)">Registrate</a>'
+        : '¿Ya tenés cuenta? <a href="#" id="toDLogin" style="color:var(--amber)">Ingresá</a>'}
     </div>`;
-  const go=()=>{
-    if($('#drvKey').value===DRIVER_KEY){ driverAuth=true; render(); }
-    else { $('#drvErr').textContent='Clave incorrecta. Intentá de nuevo.'; $('#drvKey').value=''; $('#drvKey').focus(); }
+  const go=async ()=>{
+    const name=$('#dName').value.trim(), pass=$('#dPass').value;
+    if(!name){ $('#dErr').textContent='Escribí tu nombre.'; return; }
+    if(pass.length<6){ $('#dErr').textContent='La clave debe tener al menos 6 caracteres.'; return; }
+    $('#dErr').textContent='...';
+    const email=slugEmail(name,'chofer');
+    if(drvMode==='register'){
+      const { data, error } = await sb.auth.signUp({ email, password:pass, options:{ data:{ name, role:'conductor' } } });
+      if(error){ $('#dErr').textContent = /registered|already/i.test(error.message) ? 'Ese nombre ya existe. Probá con otro o ingresá.' : error.message; return; }
+      if(!data.session){ const r=await sb.auth.signInWithPassword({ email, password:pass });
+        if(r.error){ $('#dErr').textContent='Cuenta creada. Ya podés ingresar.'; drvMode='login'; render(); return; } }
+    } else {
+      const { error } = await sb.auth.signInWithPassword({ email, password:pass });
+      if(error){ $('#dErr').textContent='Nombre o clave incorrectos.'; return; }
+    }
+    const { data:{ session } } = await sb.auth.getSession();
+    authUser = session?session.user:null; authName = authUser?.user_metadata?.name || name;
+    render();
   };
-  $('#drvEnter').onclick=go;
-  $('#drvKey').addEventListener('keydown',e=>{if(e.key==='Enter')go();});
-  setTimeout(()=>$('#drvKey').focus(),50);
+  $('#dGo').onclick=go;
+  $('#dPass').addEventListener('keydown',e=>{if(e.key==='Enter')go();});
+  if($('#toDReg')) $('#toDReg').onclick=e=>{e.preventDefault();drvMode='register';render();};
+  if($('#toDLogin')) $('#toDLogin').onclick=e=>{e.preventDefault();drvMode='login';render();};
+  setTimeout(()=>$('#dName').focus(),50);
 }
 
 /* ---------------- ADMIN ---------------- */
@@ -1041,8 +1069,8 @@ function tick(){
   if(sb) applyLivePositions();              // mantiene el movimiento en vivo y limpia posiciones viejas
   const modalOpen=document.getElementById('nameModal').classList.contains('show');
   if(modalOpen) return;
-  if(role==='cliente'){ if(!sb || authUser) render(); }               // no refrescar mientras el padre escribe su login
-  else if(role==='conductor' && driverAuth && !showForm){ render(); }   // live ETAs, but not while typing
+  if(role==='cliente'){ if(!sb || isParent()) render(); }
+  else if(role==='conductor'){ if((!sb || isConductor()) && !showForm) render(); }
   else if(role==='admin' && adminAuth){ render(); }                     // live report list
 }
 setInterval(tick,1000);
