@@ -578,9 +578,10 @@ async function stopBroadcast(b){
   try{ await sb.from('posiciones').delete().eq('plate',b.plate); }catch(e){}
 }
 
-/* ask for the passenger name before dropping the pin */
+/* pide el nombre solo si no hay sesión; con cuenta usa el nombre del padre */
 let pendingLoc=null;
 function askName(lat,lng){
+  if(sb && authUser){ placing=false; render(); addPin(lat,lng, authName || (authUser.user_metadata&&authUser.user_metadata.name) || 'Mi hijo/a'); return; }
   pendingLoc={lat,lng};
   const inp=document.getElementById('pinName');
   inp.value=''; document.getElementById('nameModal').classList.add('show');
