@@ -1085,15 +1085,20 @@ function toggleGps(b){
   );
 }
 
-/* clock + animation loop */
-function tick(){
-  buses.forEach(stepBus);
-  if(sb) applyLivePositions();              // mantiene el movimiento en vivo y limpia posiciones viejas
+/* refresco de interfaz que respeta pantallas de login y formularios abiertos */
+function liveRender(){
   const modalOpen=document.getElementById('nameModal').classList.contains('show');
   if(modalOpen) return;
   if(role==='cliente'){ if(!sb || isParent()) render(); }
   else if(role==='conductor'){ if((!sb || isConductor()) && !showForm) render(); }
-  else if(role==='admin' && adminAuth){ render(); }                     // live report list
+  else if(role==='admin' && adminAuth){ render(); }
+}
+
+/* clock + animation loop */
+function tick(){
+  buses.forEach(stepBus);
+  if(sb) applyLivePositions();              // mantiene el movimiento en vivo y limpia posiciones viejas
+  liveRender();
 }
 setInterval(tick,1000);
 function clock(){ const d=new Date();
@@ -1155,6 +1160,14 @@ async function initData(){
           ()=>{ Promise.all([refreshPins(),refreshMyPassengers()]).then(()=>render()); })
         .subscribe();
     }catch(e){}
+    // Respaldo por sondeo: garantiza que las busetas se vean moverse en vivo
+    // aunque un evento de tiempo real se pierda (señal intermitente).
+    setInterval(()=>{ refreshPositions(); }, 2500);           // posiciones de las busetas
+    let pollN=0;
+    setInterval(()=>{ pollN++;
+      Promise.all([refreshPins(), refreshMyPassengers(), (pollN%3===0?reloadFleet():Promise.resolve())])
+        .then(()=>liveRender());
+    }, 6000);
   } else {
     reports = loadReports();
   }
