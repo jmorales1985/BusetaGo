@@ -335,21 +335,23 @@ function busIcon(color){
   return L.divIcon({className:'',html:`<div class="bus-badge" style="--c:${color}">🚐</div>`,
                     iconSize:[38,38],iconAnchor:[19,19]});
 }
-function makeBus(driver, plate, routeKey, p0){
-  const b = { id:'b'+(++seq), driver, plate, routeKey,
-              p:(p0??Math.random()*1.5),
-              speed:0.06+Math.random()*0.02, gps:false, live:false, marker:null };
-  b.marker = L.marker(posOf(b), { icon:busIcon(ROUTES[routeKey].color), zIndexOffset:500 }).addTo(map);
+function makeBus(driver, plate, routeKey){
+  const b = { id:'b'+(++seq), driver, plate, routeKey, gps:false, live:false, onMap:false, marker:null };
+  const start = ROUTES[routeKey].path[0];
+  b.marker = L.marker(start, { icon:busIcon(ROUTES[routeKey].color), zIndexOffset:500 });  // creado, se agrega al mapa solo con GPS
   b.marker.on('click',()=>focusBus(b));
   buses.push(b); return b;
 }
+function ensureOnMap(b){ if(!b.onMap){ b.marker.addTo(map); b.onMap=true; } }
+function ensureOffMap(b){ if(b.onMap){ map.removeLayer(b.marker); b.onMap=false; } }
+
 const DEFAULT_FLEET=[
   {driver:'Marco Jiménez',plate:'SJB-472',route:'S_LA'},
   {driver:'Silvia Rojas', plate:'CB-1180',route:'S_SL'},
   {driver:'Diego Castro', plate:'HB-905', route:'S_EC'}
 ];
 // Sin nube: flota local por defecto. Con nube: se carga desde la tabla busetas.
-if(!sb){ DEFAULT_FLEET.forEach((d,i)=>makeBus(d.driver,d.plate,d.route,i*0.7)); }
+if(!sb){ DEFAULT_FLEET.forEach(d=>makeBus(d.driver,d.plate,d.route)); }
 
 // Sincroniza la flota local con la tabla compartida "busetas"
 async function reloadFleet(){
@@ -362,36 +364,19 @@ async function reloadFleet(){
   }
   const rows = data||[];
   const plates = new Set(rows.map(r=>r.plate));
-  rows.forEach((r,i)=>{
+  rows.forEach(r=>{
     if(!ROUTES[r.route]) return;
     let b=buses.find(x=>x.plate===r.plate);
-    if(!b){ b=makeBus(r.driver,r.plate,r.route,(i%3)*0.7); }
+    if(!b){ b=makeBus(r.driver,r.plate,r.route); }
     else { b.driver=r.driver;
       if(b.routeKey!==r.route){ b.routeKey=r.route; b.marker.setIcon(busIcon(ROUTES[r.route].color)); } }
     b.regId=r.id;
   });
   for(let i=buses.length-1;i>=0;i--){
-    if(!plates.has(buses[i].plate)){ map.removeLayer(buses[i].marker); buses.splice(i,1); }
+    if(!plates.has(buses[i].plate)){ ensureOffMap(buses[i]); buses.splice(i,1); }
   }
 }
 
-function posOf(b){
-  const path = ROUTES[b.routeKey].path;
-  let seg = Math.floor(b.p); let t = b.p-seg;
-  if(seg>=path.length-1){seg=path.length-2;t=1;}
-  const a=path[seg], c=path[seg+1];
-  return [a[0]+(c[0]-a[0])*t, a[1]+(c[1]-a[1])*t];
-}
-function stepBus(b){
-  if(b.gps || b.live) return;               // GPS propio o posición en vivo remota manda
-  const path = ROUTES[b.routeKey].path;
-  b.p += b.speed;
-  if(b.p >= path.length-1){                 // llegó al destino → toma la ruta de regreso
-    b.routeKey = ROUTES[b.routeKey].ret; b.p = 0;
-    b.marker.setIcon(busIcon(ROUTES[b.routeKey].color));
-  }
-  b.marker.setLatLng(posOf(b));
-}
 function haversine(a,b){
   const R=6371,d=x=>x*Math.PI/180;
   const dLat=d(b[0]-a[0]),dLng=d(b[1]-a[1]);
@@ -525,7 +510,7 @@ async function persistReports(rows){
 function dropPassengers(ids){
   const my = buses.find(b=>b.id===myBusId);
   const now = new Date();
-  const dc = my ? my.marker.getLatLng() : null;
+  const dc = (my && (my.gps || my.live)) ? my.marker.getLatLng() : null;   // ubicación real del chofer
   const dropped = ids.map(id=>pins.find(x=>String(x.id)===String(id))).filter(p=>p&&p.status==='onboard');
   if(dropped.length===0) return;
   const dropIds = dropped.map(p=>p.id);
@@ -551,16 +536,16 @@ function dropPassengers(ids){
 /* -------- posiciones en vivo (GPS compartido entre dispositivos) -------- */
 const livePos = new Map();       // plate -> {lat,lng,driver,route,ts}
 const remoteMarkers = new Map(); // plate -> marker (busetas de otros dispositivos)
-const LIVE_TTL = 30000;          // ms: una posición se considera "en vivo" si es reciente
+const LIVE_TTL = 180000;         // 3 min: aguanta que el chofer cambie a WhatsApp sin desaparecer
 
 function applyLivePositions(){
   const now=Date.now();
-  // 1) busetas locales: si su placa está transmitiendo en vivo, seguimos esa posición
+  // 1) busetas locales: aparecen y se mueven SOLO si están transmitiendo GPS
   buses.forEach(b=>{
-    if(b.gps) return;                       // mi propio GPS ya manda
+    if(b.gps){ ensureOnMap(b); return; }    // mi propio GPS ya mueve el marcador
     const lp=livePos.get(b.plate);
-    if(lp && now-lp.ts < LIVE_TTL){ b.live=true; b.marker.setLatLng([lp.lat,lp.lng]); }
-    else b.live=false;
+    if(lp && now-lp.ts < LIVE_TTL){ b.live=true; b.marker.setLatLng([lp.lat,lp.lng]); ensureOnMap(b); }
+    else { b.live=false; ensureOffMap(b); }
   });
   // 2) placas remotas que no están en la flota local → marcador propio
   const localPlates=new Set(buses.map(b=>b.plate));
@@ -589,11 +574,12 @@ async function refreshPositions(){
   }
 }
 
-let lastBroadcast=0;
-async function broadcastPosition(b,lat,lng){
+let lastBroadcast=0, lastFix=null, myGpsBus=null, wakeLock=null;
+const SHARE_KEY='busetago_sharing';
+async function broadcastPosition(b,lat,lng,force){
   if(!sb) return;
-  const t=Date.now(); if(t-lastBroadcast<2000) return;  // como máximo cada 2s
-  lastBroadcast=t;
+  const t=Date.now(); if(!force && t-lastBroadcast<2000) return;
+  lastBroadcast=t; lastFix={lat,lng};
   try{ await sb.from('posiciones').upsert(
     { plate:b.plate, driver:b.driver, route:b.routeKey, lat, lng, updated_at:new Date().toISOString() },
     { onConflict:'plate' }); }catch(e){}
@@ -602,6 +588,18 @@ async function stopBroadcast(b){
   if(!sb||!b) return;
   try{ await sb.from('posiciones').delete().eq('plate',b.plate); }catch(e){}
 }
+/* mantener pantalla encendida mientras comparte (reduce pausas del navegador) */
+async function requestWakeLock(){ try{ if('wakeLock' in navigator){ wakeLock=await navigator.wakeLock.request('screen'); } }catch(e){} }
+function releaseWakeLock(){ try{ if(wakeLock){ wakeLock.release(); wakeLock=null; } }catch(e){} }
+/* "latido": reenvía la última posición aunque el GPS no dé un dato nuevo */
+setInterval(()=>{ if(myGpsBus && lastFix) broadcastPosition(myGpsBus,lastFix.lat,lastFix.lng,true); }, 15000);
+/* al volver a la app: reactivar pantalla, ponerse al día y reenviar posición */
+document.addEventListener('visibilitychange',()=>{
+  if(document.visibilityState==='visible'){
+    if(myGpsBus){ requestWakeLock(); if(lastFix) broadcastPosition(myGpsBus,lastFix.lat,lastFix.lng,true); }
+    if(sb) refreshPositions();
+  }
+});
 
 /* pide el nombre solo si no hay sesión; con cuenta usa el nombre del padre */
 let pendingLoc=null;
@@ -637,8 +635,11 @@ async function clearPins(){
   render();
 }
 
-function focusBus(b){ map.flyTo(b.marker.getLatLng(),15,{duration:.6});
-  b.marker.bindPopup(`<b>${b.driver}</b><br>${b.plate} · ${ROUTES[b.routeKey].name.split('·')[0].trim()}`).openPopup(); }
+function focusBus(b){
+  if(!b || !b.onMap){ return; }   // sin GPS activo no hay ubicación que mostrar
+  map.flyTo(b.marker.getLatLng(),15,{duration:.6});
+  b.marker.bindPopup(`<b>${b.driver}</b><br>${b.plate} · ${ROUTES[b.routeKey].name.split('·')[0].trim()}`).openPopup();
+}
 
 /* ---------------- UI state ---------------- */
 let role='cliente';
@@ -720,14 +721,18 @@ function renderClient(body){
   html += `<div class="grouplabel">Busetas</div>`;
   buses.forEach(b=>{
     const c=ROUTES[b.routeKey].color;
-    const eta = ref ? etaMin(b.marker.getLatLng(),ref) : null;
+    const liveNow = b.gps || b.live;
+    const eta = (liveNow && ref) ? etaMin(b.marker.getLatLng(),ref) : null;
+    const pill = liveNow
+      ? `<span class="pill" style="margin-left:4px"><span class="d"></span>EN VIVO</span>`
+      : `<span class="pill" style="margin-left:4px;color:#c9a24a;background:rgba(201,162,74,.12);border-color:rgba(201,162,74,.3)">SIN SEÑAL</span>`;
     html += `<div class="card" data-focus="${b.id}">
-      <div class="badge" style="background:${c}">🚐</div>
+      <div class="badge" style="background:${liveNow?c:'#3a4b55'}">🚐</div>
       <div class="meta">
         <div class="t">${ROUTES[b.routeKey].name.split('·')[0].trim()}</div>
-        <div class="s">${b.driver} · ${b.plate} <span class="pill" style="margin-left:4px"><span class="d"></span>${(b.gps||b.live)?'GPS':'EN VIVO'}</span></div>
+        <div class="s">${b.driver} · ${b.plate} ${pill}</div>
       </div>
-      <div class="eta">${eta?`<div class="n">${eta}</div><div class="u">MIN</div>`:`<div class="u" style="font-size:11px">EN<br>RUTA</div>`}</div>
+      <div class="eta">${eta?`<div class="n">${eta}</div><div class="u">MIN</div>`:`<div class="u" style="font-size:11px">${liveNow?'EN<br>RUTA':'—'}</div>`}</div>
     </div>`;
   });
   body.innerHTML=html;
@@ -844,9 +849,12 @@ function renderDriver(body){
   if(my){
     html += `<div class="switchrow" style="margin-top:12px">
       <div class="l"><div class="t">Compartir mi ubicación (GPS real)</div>
-      <div class="s">${my.gps?'Transmitiendo tu posición real':'Usando posición simulada'}</div></div>
+      <div class="s">${my.gps?'Transmitiendo tu ubicación en vivo':'Activá el GPS para que te vean en el mapa'}</div></div>
       <button class="toggle ${my.gps?'on':''}" id="gpsTgl"></button>
     </div>`;
+    if(my.gps){
+      html += `<div class="hint" style="margin-top:-4px">Podés cambiar a WhatsApp sin problema: tu buseta sigue visible unos minutos. No cierres sesión para seguir transmitiendo.</div>`;
+    }
   } else {
     html += `<div class="empty" style="margin:12px 0 4px">Elegí una buseta arriba para recoger pasajeros y transmitir tu ubicación.</div>`;
   }
@@ -856,7 +864,7 @@ function renderDriver(body){
     html += `<div class="empty">Nadie esperando por ahora.<br>En <b>Cliente</b> (o desde otro dispositivo) se marca en el mapa.</div>`;
   } else {
     waiting.forEach(p=>{
-      const info = my ? `${haversine(my.marker.getLatLng(),[p.lat,p.lng]).toFixed(1)} km · ${etaMin(my.marker.getLatLng(),[p.lat,p.lng])} min` : 'Esperando';
+      const info = (my && (my.gps||my.live)) ? `${haversine(my.marker.getLatLng(),[p.lat,p.lng]).toFixed(1)} km · ${etaMin(my.marker.getLatLng(),[p.lat,p.lng])} min` : 'Esperando';
       html += `<div class="card" data-pin="${p.id}">
         <div class="badge" style="background:var(--teal)">🙋</div>
         <div class="meta"><div class="t">${p.name}</div>
@@ -1071,16 +1079,21 @@ function renderAdminLogin(body){
 let watchId=null;
 function toggleGps(b){
   if(!b) return;
-  if(b.gps){ b.gps=false; if(watchId!=null){navigator.geolocation.clearWatch(watchId);watchId=null;} stopBroadcast(b); render(); return; }
+  if(b.gps){ b.gps=false; myGpsBus=null; lastFix=null;
+    try{ localStorage.removeItem(SHARE_KEY); }catch(e){}
+    if(watchId!=null){navigator.geolocation.clearWatch(watchId);watchId=null;}
+    releaseWakeLock(); ensureOffMap(b); stopBroadcast(b); render(); return; }
   if(!navigator.geolocation){ alert('Sin soporte de GPS en este navegador.'); return; }
+  myGpsBus=b; try{ localStorage.setItem(SHARE_KEY,b.plate); }catch(e){}
+  requestWakeLock();
   let firstFix=true;
   watchId=navigator.geolocation.watchPosition(
     p=>{ b.gps=true; const lat=p.coords.latitude, lng=p.coords.longitude;
-         b.marker.setLatLng([lat,lng]);
+         b.marker.setLatLng([lat,lng]); ensureOnMap(b);
          if(firstFix){ map.flyTo([lat,lng],15); firstFix=false; }
          broadcastPosition(b,lat,lng);       // ← comparte la ubicación con los demás dispositivos
          render(); },
-    ()=>{ alert('No se pudo activar el GPS (permiso denegado). Se mantiene la posición simulada.'); },
+    ()=>{ alert('No se pudo activar el GPS. Revisá el permiso de ubicación del navegador.'); },
     { enableHighAccuracy:true, maximumAge:2000 }
   );
 }
@@ -1096,8 +1109,7 @@ function liveRender(){
 
 /* clock + animation loop */
 function tick(){
-  buses.forEach(stepBus);
-  if(sb) applyLivePositions();              // mantiene el movimiento en vivo y limpia posiciones viejas
+  if(sb) applyLivePositions();              // muestra/mueve busetas según su GPS y limpia las inactivas
   liveRender();
 }
 setInterval(tick,1000);
@@ -1148,6 +1160,14 @@ async function initData(){
     await refreshPositions();
     await refreshPins();
     await refreshMyPassengers();
+    // Retomar el GPS si el chofer ya lo tenía activo (por si el navegador recargó la app)
+    try{
+      const sp=localStorage.getItem(SHARE_KEY);
+      if(sp && isConductor()){
+        const b=buses.find(x=>x.plate===sp);
+        if(b && !b.gps){ myBusId=b.id; toggleGps(b); }
+      }
+    }catch(e){}
     try{
       sb.channel('busetago-rt')
         .on('postgres_changes',{event:'*',schema:'public',table:'busetas'},
