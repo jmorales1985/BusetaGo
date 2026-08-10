@@ -725,6 +725,10 @@ let authMode='login';   // 'login' | 'register'
 function renderParentAuth(body){
   $('#sheetTitle').textContent = authMode==='login' ? 'Ingresá a tu cuenta' : 'Creá tu cuenta';
   $('#sheetSub').textContent = 'Para seguir la buseta de tu hijo.';
+  // Si el formulario ya está en pantalla para este modo, NO lo reconstruimos
+  // (así un refresco en vivo no borra lo que el padre está escribiendo).
+  if(document.getElementById('pName') && body.dataset.authmode===authMode){ return; }
+  body.dataset.authmode=authMode;
   body.innerHTML=`
     <div class="form show" style="align-items:stretch">
       <div class="lock">👤</div>
